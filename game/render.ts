@@ -11,6 +11,7 @@ import {
   LEVEL2_SPIKE_ZONE,
   LEVEL2_COLLAPSE_TILE,
   LEVEL2_STEP_1,
+  LEVEL2_STEP_2,
   LEVEL2_STEP_3,
   LEVEL2_CHASM_1,
   LEVEL2_CHASM_2,
@@ -25,7 +26,7 @@ import {
   LEVEL_BANNER_DURATION,
   isGone,
   spikesUp,
-  movingStepRect,
+  chasmPlatformRect,
 } from "./engine.ts";
 import type { GameState, Rect } from "./engine.ts";
 
@@ -145,21 +146,21 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
     groundSlab(ctx, { ...LEVEL2_COLLAPSE_TILE, h: 400 }, false);
   }
 
-  // The staircase: the bottom step is permanently safe and drawn as plain
-  // ground. The middle step is drawn wherever its trap currently puts it —
-  // ordinary ground either way, with zero visual difference before it's ever
-  // moved. The top step looks identical until it's been landed on — only
-  // then does it switch to a "breaking" look, and only until it's gone.
+  // The staircase: all three steps are permanently fixed in place, drawn as
+  // plain ground with zero visual difference before anything happens. The
+  // top step looks identical until it's been landed on — only then does it
+  // switch to a "breaking" look, and only until it's gone.
   groundSlab(ctx, LEVEL2_STEP_1, false);
-  groundSlab(ctx, movingStepRect(state.traps.movingStep), false);
+  groundSlab(ctx, LEVEL2_STEP_2, false);
   if (!isGone(state.traps.platform, PLATFORM_BREAK_DELAY)) {
     groundSlab(ctx, LEVEL2_STEP_3, state.traps.platform.triggered);
   }
 
-  // The chasm platforms: both permanently safe, drawn as a distinct floating
-  // slab rather than a ground column.
+  // The chasm platforms: distinct floating slabs rather than ground columns.
+  // CHASM_1 is permanently safe. CHASM_2 is drawn wherever its trap currently
+  // puts it — ordinary and stationary either way, until it's ever moved.
   floatingPlatform(ctx, LEVEL2_CHASM_1, false);
-  floatingPlatform(ctx, LEVEL2_CHASM_2, false);
+  floatingPlatform(ctx, chasmPlatformRect(state.traps.chasmPlatform), false);
 }
 
 function drawHiddenBlock(ctx: CanvasRenderingContext2D, state: GameState): void {

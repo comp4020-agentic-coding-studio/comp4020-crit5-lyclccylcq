@@ -3,10 +3,10 @@ import { render } from "../game/render.ts";
 import {
   createInitialState,
   LEVEL2_COLLAPSE_TILE,
-  LEVEL2_STEP_2,
+  LEVEL2_CHASM_2,
   COLLAPSE_DELAY,
   DOOR_OPEN_DURATION,
-  MOVING_STEP_SHIFT_DISTANCE,
+  MOVING_PLATFORM_SHIFT_DISTANCE,
 } from "../game/engine.ts";
 import type { GameState } from "../game/engine.ts";
 
@@ -99,24 +99,24 @@ describe("requirement 1: the collapsing tile never telegraphs itself", () => {
   });
 });
 
-describe("requirement 2: the moving-step trap only moves once activated", () => {
-  it("draws the step at its normal resting spot before the trap is triggered", () => {
+describe("requirement 2: the chasm platform trap only moves once activated", () => {
+  it("draws the platform at its normal resting spot before the trap is triggered", () => {
     const draws = renderTo(createInitialState(2)).fillRectCalls.filter(
-      (call) => call.w === LEVEL2_STEP_2.w && call.h === LEVEL2_STEP_2.h,
+      (call) => call.w === LEVEL2_CHASM_2.w && call.h === LEVEL2_CHASM_2.h,
     );
-    expect(draws.some((call) => call.x === LEVEL2_STEP_2.x)).toBe(true);
+    expect(draws.some((call) => call.x === LEVEL2_CHASM_2.x)).toBe(true);
   });
 
-  it("draws the step visibly displaced right after it's triggered", () => {
+  it("draws the platform visibly displaced right after it's triggered", () => {
     const state: GameState = {
       ...createInitialState(2),
-      traps: { ...createInitialState(2).traps, movingStep: { triggered: true, timer: 0 } },
+      traps: { ...createInitialState(2).traps, chasmPlatform: { triggered: true, timer: 0 } },
     };
     const draws = renderTo(state).fillRectCalls.filter(
-      (call) => call.w === LEVEL2_STEP_2.w && call.h === LEVEL2_STEP_2.h,
+      (call) => call.w === LEVEL2_CHASM_2.w && call.h === LEVEL2_CHASM_2.h,
     );
-    expect(draws.some((call) => call.x === LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE)).toBe(true);
-    expect(draws.some((call) => call.x === LEVEL2_STEP_2.x)).toBe(false);
+    expect(draws.some((call) => call.x === LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE)).toBe(true);
+    expect(draws.some((call) => call.x === LEVEL2_CHASM_2.x)).toBe(false);
   });
 });
 

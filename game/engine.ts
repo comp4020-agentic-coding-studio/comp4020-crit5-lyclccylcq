@@ -2,7 +2,7 @@
 // Rendering lives in render.ts; input/loop wiring lives in main.ts.
 
 export const GRAVITY = 1800;
-export const MOVE_SPEED = 220;
+export const MOVE_SPEED = 320;
 export const JUMP_VELOCITY = -620;
 export const MAX_FALL_SPEED = 900;
 
@@ -17,8 +17,10 @@ export const DEATH_Y = GROUND_Y + 220;
 export const VIEWPORT_WIDTH = 960;
 export const VIEWPORT_HEIGHT = 360;
 
-// A collapsing tile gives way this long after the player lands on it.
-export const COLLAPSE_DELAY = 0.35;
+// A collapsing tile gives way this long after the player lands on it — short
+// enough that simply sprinting across the trigger and the tile isn't a
+// reliable escape (crossing both takes ~0.34s at full move speed).
+export const COLLAPSE_DELAY = 0.15;
 // Popup spikes rise this long after the player enters their trigger zone.
 export const SPIKE_DELAY = 0.45;
 // A breakable platform gives way this long after the player lands on it.
@@ -32,13 +34,15 @@ export const DOOR_ENTER_DELAY = 0.45;
 export const DOOR_OPEN_DURATION = 0.18;
 // How long the level-name card stays up once a level is first entered.
 export const LEVEL_BANNER_DURATION = 1.2;
-// How long the second staircase step stays displaced before gliding back.
-export const MOVING_STEP_SHIFT_DELAY = 0.5;
-// How far it suddenly moves away — far enough that the jump that expected to
-// land on it lands on nothing instead.
-export const MOVING_STEP_SHIFT_DISTANCE = 160;
+// How long the second chasm platform stays displaced before gliding back.
+export const MOVING_PLATFORM_SHIFT_DELAY = 0.5;
+// How far it suddenly moves away — far enough that even a full-speed jump
+// launched from the far-right edge of CHASM_1 can't reach it once it has
+// moved: that jump instead runs into the far ground's near wall mid-fall and
+// drops into the chasm.
+export const MOVING_PLATFORM_SHIFT_DISTANCE = 260;
 // How long the smooth glide back to its original spot takes.
-export const MOVING_STEP_RETURN_DURATION = 0.35;
+export const MOVING_PLATFORM_RETURN_DURATION = 0.35;
 
 export type Phase = "playing" | "dead" | "entering" | "won";
 export type Level = 1 | 2;
@@ -77,7 +81,7 @@ export interface Traps {
   spikes: TrapRuntime;
   fakeDoor: TrapRuntime;
   platform: TrapRuntime;
-  movingStep: TrapRuntime;
+  chasmPlatform: TrapRuntime;
 }
 
 // Shared footprint for every door in the game — Level 1's honest exit, and
@@ -138,29 +142,33 @@ export const LEVEL2_GROUND_SEGMENTS: Rect[] = [
 ];
 
 // A short ascending staircase: each step is a comfortable +40 relative climb,
-// blocking its full vertical column like ordinary ground. STEP_2 is a
-// one-time deceptive moving platform (see LEVEL2_STEP_2_TRIGGER below) and
-// STEP_3 is the deceptive breakable platform — see part 4 below.
+// blocking its full vertical column like ordinary ground. Every step here is
+// permanently safe and stationary — STEP_3 is the deceptive breakable
+// platform (see part 4 below), which crumbles but never moves.
 export const LEVEL2_STEP_1: Rect = { x: 1680, y: GROUND_Y - 40, w: 90, h: 400 };
 export const LEVEL2_STEP_2: Rect = { x: 1770, y: GROUND_Y - 80, w: 130, h: 400 };
 export const LEVEL2_STEP_3: Rect = { x: 1900, y: GROUND_Y - 120, w: 70, h: 400 };
 
-// A thin band just above STEP_2: the player passing through it while falling
-// toward the step — genuinely about to land — is what counts as "the first
-// attempt to reach it". Looking at, jumping past, or standing beside it never
-// overlaps this band, so nothing here arms just from proximity.
-export const LEVEL2_STEP_2_TRIGGER: Rect = {
-  x: LEVEL2_STEP_2.x,
-  y: LEVEL2_STEP_2.y - 30,
-  w: LEVEL2_STEP_2.w,
-  h: 30,
-};
-
-// A row of thin floating platforms crossing the chasm at 2150-2570. Both stay
-// permanently safe: the fake-door trick forces a backtrack across this same
-// chasm, so nothing here can be allowed to ever break.
+// A row of thin floating platforms crossing the chasm at 2150-2570. CHASM_1 is
+// permanently safe. CHASM_2 is a one-time deceptive moving platform (see
+// LEVEL2_CHASM_2_TRIGGER below) — the fake-door trick forces a backtrack
+// across this same chasm, so once it has settled it must stay put for good.
 export const LEVEL2_CHASM_1: Rect = { x: 2220, y: GROUND_Y - 30, w: 90, h: 20 };
 export const LEVEL2_CHASM_2: Rect = { x: 2400, y: GROUND_Y - 30, w: 90, h: 20 };
+
+// A full vertical column starting exactly at CHASM_1's right edge — the same
+// "column" shape as every other Level 2 trigger. Standing on CHASM_1, even at
+// its rightmost point, never overlaps it; the player has to actually launch
+// off it and cross into the gap to arm the trap, which is what makes this
+// "the first genuine attempt to jump toward it". Arming this early (rather
+// than only right above CHASM_2) is what leaves enough airtime to bait the
+// platform's move and still steer back onto CHASM_1.
+export const LEVEL2_CHASM_2_TRIGGER: Rect = {
+  x: LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w,
+  y: 0,
+  w: LEVEL2_CHASM_2.x + LEVEL2_CHASM_2.w - (LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w),
+  h: GROUND_Y,
+};
 
 export const LEVEL2_COLLAPSE_TILE: Rect = { x: 640, y: GROUND_Y, w: 70, h: 20 };
 // A narrow zone on the safe ground just before the tile: reaching it arms the
@@ -177,8 +185,8 @@ export const LEVEL2_COLLAPSE_TRIGGER: Rect = {
 export const LEVEL2_HIDDEN_BLOCK_TRIGGER: Rect = { x: 1010, y: 0, w: 60, h: GROUND_Y };
 export const LEVEL2_HIDDEN_BLOCK: Rect = { x: 1010, y: GROUND_Y - 110, w: 60, h: 20 };
 
-export const LEVEL2_SPIKE_TRIGGER: Rect = { x: 1380, y: 0, w: 40, h: GROUND_Y };
-export const LEVEL2_SPIKE_ZONE: Rect = { x: 1560, y: GROUND_Y - 18, w: 80, h: 18 };
+export const LEVEL2_SPIKE_TRIGGER: Rect = { x: 1280, y: 0, w: 40, h: GROUND_Y };
+export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 80, h: 18 };
 
 // The apparent exit: looks and behaves exactly like Level 1's honest door
 // until the player gets close, at which point it slams shut and becomes a
@@ -212,7 +220,7 @@ export function createInitialState(level: Level = 1, opts?: { announce?: boolean
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
-      movingStep: { triggered: false, timer: 0 },
+      chasmPlatform: { triggered: false, timer: 0 },
     },
     phaseTime: 0,
     banner: announce ? { timer: 0 } : null,
@@ -249,18 +257,18 @@ function standingOn(player: Player, rect: Rect): boolean {
   );
 }
 
-// STEP_2's current position: ordinary and stationary until its trap has
+// CHASM_2's current position: ordinary and stationary until its trap has
 // fired, then instantly displaced sideways (a sudden move, not an animated
 // one — nothing should be visibly "in transit"), then gliding smoothly back
 // to its exact original spot once the shift delay elapses, where it settles
 // permanently.
-export function movingStepRect(trap: TrapRuntime): Rect {
-  if (!trap.triggered) return LEVEL2_STEP_2;
-  if (trap.timer < MOVING_STEP_SHIFT_DELAY) {
-    return { ...LEVEL2_STEP_2, x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE };
+export function chasmPlatformRect(trap: TrapRuntime): Rect {
+  if (!trap.triggered) return LEVEL2_CHASM_2;
+  if (trap.timer < MOVING_PLATFORM_SHIFT_DELAY) {
+    return { ...LEVEL2_CHASM_2, x: LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE };
   }
-  const t = Math.min((trap.timer - MOVING_STEP_SHIFT_DELAY) / MOVING_STEP_RETURN_DURATION, 1);
-  return { ...LEVEL2_STEP_2, x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE * (1 - t) };
+  const t = Math.min((trap.timer - MOVING_PLATFORM_SHIFT_DELAY) / MOVING_PLATFORM_RETURN_DURATION, 1);
+  return { ...LEVEL2_CHASM_2, x: LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE * (1 - t) };
 }
 
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
@@ -268,9 +276,9 @@ export function solidRects(traps: Traps): Rect[] {
   const rects = [
     ...LEVEL2_GROUND_SEGMENTS,
     LEVEL2_STEP_1,
-    movingStepRect(traps.movingStep),
+    LEVEL2_STEP_2,
     LEVEL2_CHASM_1,
-    LEVEL2_CHASM_2,
+    chasmPlatformRect(traps.chasmPlatform),
   ];
   if (!isGone(traps.collapse)) rects.push(LEVEL2_COLLAPSE_TILE, { ...LEVEL2_COLLAPSE_TILE, h: 400 });
   if (!isGone(traps.platform, PLATFORM_BREAK_DELAY)) rects.push(LEVEL2_STEP_3);
@@ -367,7 +375,7 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
     spikes: { ...state.traps.spikes },
     fakeDoor: { ...state.traps.fakeDoor },
     platform: { ...state.traps.platform },
-    movingStep: { ...state.traps.movingStep },
+    chasmPlatform: { ...state.traps.chasmPlatform },
   };
 
   // Trigger checks use the position the player entered this frame with, so a
@@ -389,18 +397,15 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   if (!traps.fakeDoor.triggered && rectsOverlap(playerRect(state.player), LEVEL2_FAKE_DOOR_TRIGGER)) {
     traps.fakeDoor = { triggered: true, timer: 0 };
   }
-  // Falling toward the step, not jumping past or resting beside it, is what
-  // counts as a genuine attempt to land on it — and it only ever fires once.
-  if (
-    !traps.movingStep.triggered &&
-    state.player.vy > 0 &&
-    rectsOverlap(playerRect(state.player), LEVEL2_STEP_2_TRIGGER)
-  ) {
-    traps.movingStep = { triggered: true, timer: 0 };
+  // Leaving CHASM_1 into the gap, not resting on it, is what counts as a
+  // genuine attempt to reach the platform beyond — and it only ever fires
+  // once.
+  if (!traps.chasmPlatform.triggered && rectsOverlap(playerRect(state.player), LEVEL2_CHASM_2_TRIGGER)) {
+    traps.chasmPlatform = { triggered: true, timer: 0 };
   }
   if (traps.spikes.triggered) traps.spikes.timer += dt;
   if (traps.collapse.triggered) traps.collapse.timer += dt;
-  if (traps.movingStep.triggered) traps.movingStep.timer += dt;
+  if (traps.chasmPlatform.triggered) traps.chasmPlatform.timer += dt;
 
   const player = integratePlayer(state.player, input, dt, solidRects(traps), LEVEL2_WIDTH);
 
@@ -453,7 +458,12 @@ export function step(state: GameState, input: Input, dt: number): GameState {
 
 function tickDead(state: GameState, dt: number): GameState {
   const phaseTime = state.phaseTime + dt;
-  if (phaseTime >= RESPAWN_DELAY) return createInitialState(state.level, { announce: false });
+  if (phaseTime >= RESPAWN_DELAY) {
+    // Every trap — including the chasm platform — resets with the rest of
+    // the level: the moving-platform trick is one-time only per life, not
+    // globally, so each new attempt gets its own first genuine try at it.
+    return createInitialState(state.level, { announce: false });
+  }
   return { ...state, phaseTime };
 }
 

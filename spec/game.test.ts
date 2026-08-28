@@ -11,10 +11,12 @@ import {
   LEVEL1_SPIKE_HAZARD,
   LEVEL2_SPAWN,
   LEVEL2_GROUND_SEGMENTS,
+  LEVEL2_COLLAPSE_TILE,
   LEVEL2_COLLAPSE_TRIGGER,
   LEVEL2_FAKE_DOOR,
   LEVEL2_FAKE_DOOR_TRIGGER,
   LEVEL2_REAL_DOOR,
+  LEVEL2_SPIKE_TRIGGER,
   LEVEL2_SPIKE_ZONE,
   LEVEL2_STEP_1,
   LEVEL2_STEP_2,
@@ -25,16 +27,18 @@ import {
   SPIKE_DELAY,
   RESPAWN_DELAY,
   DOOR_ENTER_DELAY,
-  LEVEL2_STEP_2_TRIGGER,
-  MOVING_STEP_SHIFT_DELAY,
-  MOVING_STEP_SHIFT_DISTANCE,
-  MOVING_STEP_RETURN_DURATION,
-  movingStepRect,
+  LEVEL2_CHASM_2_TRIGGER,
+  MOVING_PLATFORM_SHIFT_DELAY,
+  MOVING_PLATFORM_SHIFT_DISTANCE,
+  MOVING_PLATFORM_RETURN_DURATION,
+  chasmPlatformRect,
   GROUND_Y,
   PLAYER_H,
   PLAYER_W,
+  MOVE_SPEED,
+  COLLAPSE_DELAY,
 } from "../game/engine.ts";
-import type { Input } from "../game/engine.ts";
+import type { GameState, Input } from "../game/engine.ts";
 
 // Crit 5 — "A game":
 // https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/crits/05-game/
@@ -82,6 +86,67 @@ describe("no tutorial anywhere", () => {
 // game rules and rendering are deliberately separate (see main.ts), so a
 // rule can be tested without a browser and a visual change never risks it.
 const noInput: Input = { left: false, right: false, jumpPressed: false };
+
+describe("player movement speed", () => {
+  it("moved noticeably slower before this tuning pass — a moderate bump, not a rewrite", () => {
+    // Locks the "moderate increase" requirement to a concrete range: fast
+    // enough to feel different, not so fast that jump arcs above become
+    // unreliable guesswork.
+    expect(MOVE_SPEED).toBeGreaterThan(220);
+    expect(MOVE_SPEED).toBeLessThanOrEqual(400);
+  });
+
+  it("sets horizontal velocity to exactly MOVE_SPEED in the held direction, each frame", () => {
+    const state = createInitialState(1);
+    const dt = 1 / 60;
+
+    const right = step(state, { left: false, right: true, jumpPressed: false }, dt);
+    expect(right.player.vx).toBe(MOVE_SPEED);
+    expect(right.player.x).toBeCloseTo(state.player.x + MOVE_SPEED * dt, 5);
+
+    const left = step(state, { left: true, right: false, jumpPressed: false }, dt);
+    expect(left.player.vx).toBe(-MOVE_SPEED);
+    expect(left.player.x).toBeCloseTo(state.player.x - MOVE_SPEED * dt, 5);
+  });
+
+  it("still clears both level 1 gaps and the spike at the current speed — jumps stay reliable", () => {
+    const right: Input = { left: false, right: true, jumpPressed: false };
+    const rightJump: Input = { left: false, right: true, jumpPressed: true };
+    const hover: Input = { left: false, right: false, jumpPressed: false };
+
+    let state = createInitialState(1);
+
+    const run = (input: Input, frames: number) => {
+      for (let i = 0; i < frames && state.phase === "playing"; i++) {
+        state = step(state, input, 1 / 60);
+      }
+    };
+    const hop = (driftFrames: number) => {
+      run(rightJump, 1);
+      run(right, driftFrames);
+      let i = 0;
+      while (state.phase === "playing" && !state.player.onGround && i < 90) {
+        state = step(state, hover, 1 / 60);
+        i++;
+      }
+    };
+
+    run(right, 62);
+    hop(30); // clears the 70px gap at 400-470
+    expect(state.phase).toBe("playing");
+
+    run(right, 15);
+    hop(30); // clears the spike hazard at 680-760
+    expect(state.phase).toBe("playing");
+
+    run(right, 15);
+    hop(35); // clears the 100px gap at 900-1000
+    expect(state.phase).toBe("playing");
+
+    run(right, 300);
+    expect(state.phase).toBe("entering"); // reached the goal, not "dead" in a gap or on the spike
+  });
+});
 
 describe("play can be lost", () => {
   it("starts in a playing state on level 1", () => {
@@ -164,6 +229,15 @@ describe("play can be lost", () => {
     expect(next.phase).toBe("dead");
   });
 
+  it("moves the spike hazard left, leaving clear room to approach the staircase after it", () => {
+    // Previously the zone started at x=1560, hard up against STEP_1 at 1680.
+    expect(LEVEL2_SPIKE_ZONE.x).toBeLessThan(1560);
+    expect(LEVEL2_SPIKE_TRIGGER.x).toBeLessThan(1380);
+
+    const gapToStaircase = LEVEL2_STEP_1.x - (LEVEL2_SPIKE_ZONE.x + LEVEL2_SPIKE_ZONE.w);
+    expect(gapToStaircase).toBeGreaterThanOrEqual(100); // enough room to land and line up the climb
+  });
+
   it("arms the collapsing floor on approach, not only once already standing on it", () => {
     const state = createInitialState(2);
     state.player = {
@@ -176,6 +250,29 @@ describe("play can be lost", () => {
     const next = step(state, noInput, 1 / 60);
 
     expect(next.traps.collapse.triggered).toBe(true);
+  });
+
+  it("collapses faster than a full-speed sprint could clear the trigger and the tile", () => {
+    // The whole point of the fast delay: by the time it gives way, a player
+    // sprinting from the moment they armed it hasn't covered the tile yet.
+    const distanceToClear = LEVEL2_COLLAPSE_TILE.x + LEVEL2_COLLAPSE_TILE.w - LEVEL2_COLLAPSE_TRIGGER.x;
+    const distanceCoveredBeforeCollapse = MOVE_SPEED * COLLAPSE_DELAY;
+    expect(distanceCoveredBeforeCollapse).toBeLessThan(distanceToClear);
+  });
+
+  it("drops a player sprinting flat-out through the hidden pit — sprinting isn't a reliable escape", () => {
+    let state = createInitialState(2);
+    state.player = { ...state.player, x: 560, y: GROUND_Y - PLAYER_H, onGround: true };
+    const right: Input = { left: false, right: true, jumpPressed: false };
+
+    let frames = 0;
+    const maxFrames = 90; // 1.5s — generous even for a dead run plus falling to the death line
+    while (state.phase === "playing" && frames < maxFrames) {
+      state = step(state, right, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("dead");
   });
 
   it("leaves the fake door untriggered while the player is still short of its trigger zone", () => {
@@ -302,7 +399,7 @@ describe("play can be lost", () => {
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: true, timer: 0 },
       platform: { triggered: true, timer: 0 },
-      movingStep: { triggered: false, timer: 0 },
+      chasmPlatform: { triggered: false, timer: 0 },
     });
 
     for (const rects of [untouched, midCollapse]) {
@@ -310,6 +407,28 @@ describe("play can be lost", () => {
       expect(rects).toContainEqual(LEVEL2_STEP_2);
       expect(rects).toContainEqual(LEVEL2_CHASM_1);
       expect(rects).toContainEqual(LEVEL2_CHASM_2);
+    }
+  });
+
+  it("never moves the left staircase steps, no matter what state the chasm platform trap is in", () => {
+    const baseTraps = {
+      collapse: { triggered: false, timer: 0 },
+      hiddenBlock: { triggered: false, timer: 0 },
+      spikes: { triggered: false, timer: 0 },
+      fakeDoor: { triggered: false, timer: 0 },
+      platform: { triggered: false, timer: 0 },
+    };
+    const chasmPlatformStates = [
+      { triggered: false, timer: 0 }, // before activation
+      { triggered: true, timer: 0 }, // just triggered, snapped away
+      { triggered: true, timer: MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION / 2 }, // mid-glide
+      { triggered: true, timer: MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION }, // settled
+    ];
+
+    for (const chasmPlatform of chasmPlatformStates) {
+      const rects = solidRects({ ...baseTraps, chasmPlatform });
+      expect(rects).toContainEqual(LEVEL2_STEP_1);
+      expect(rects).toContainEqual(LEVEL2_STEP_2);
     }
   });
 
@@ -361,73 +480,226 @@ describe("play can be lost", () => {
     expect(solidRects(state.traps)).not.toContainEqual(LEVEL2_STEP_3);
   });
 
-  it("does not arm the moving step just from passing beside or under it", () => {
+  it("does not arm the chasm platform merely from resting at CHASM_1's far edge", () => {
     const state = createInitialState(2);
-    // Jumping up right beside it, moving upward past it — not a falling
-    // approach toward landing on top.
+    // Resting right at CHASM_1's rightmost point — this is what "before
+    // activation, the platform looks exactly normal" has to hold against,
+    // since it's the natural spot to stand and size up the jump.
     state.player = {
       ...state.player,
-      x: LEVEL2_STEP_2.x - PLAYER_W - 2,
-      y: LEVEL2_STEP_2.y,
-      vy: -300,
+      x: LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w - PLAYER_W,
+      y: LEVEL2_CHASM_1.y - PLAYER_H,
+      vy: 0,
+      onGround: true,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.traps.chasmPlatform.triggered).toBe(false);
+    expect(chasmPlatformRect(next.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+  });
+
+  it("arms the chasm platform on a genuine attempt to cross into the gap beyond CHASM_1, and it looks untouched right up until then", () => {
+    const state = createInitialState(2);
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+
+    // Just past CHASM_1's right edge, airborne over the gap — a genuine
+    // attempt to reach the platform beyond, not merely standing on CHASM_1.
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
       onGround: false,
     };
 
     const next = step(state, noInput, 1 / 60);
 
-    expect(next.traps.movingStep.triggered).toBe(false);
-    expect(movingStepRect(next.traps.movingStep)).toEqual(LEVEL2_STEP_2);
+    expect(next.traps.chasmPlatform.triggered).toBe(true);
   });
 
-  it("arms the moving step on a genuine falling approach toward it, and it looks untouched right up until then", () => {
-    const state = createInitialState(2);
-    expect(movingStepRect(state.traps.movingStep)).toEqual(LEVEL2_STEP_2);
-
-    state.player = {
-      ...state.player,
-      x: LEVEL2_STEP_2.x + 10,
-      y: LEVEL2_STEP_2_TRIGGER.y,
-      vy: 300,
-      onGround: false,
-    };
-
-    const next = step(state, noInput, 1 / 60);
-
-    expect(next.traps.movingStep.triggered).toBe(true);
-  });
-
-  it("suddenly displaces the step once triggered, then glides it back, then leaves it permanently in place", () => {
+  it("suddenly displaces the platform once triggered, then glides it back, then leaves it permanently in place", () => {
     let state = createInitialState(2);
     state.player = {
       ...state.player,
-      x: LEVEL2_STEP_2.x + 10,
-      y: LEVEL2_STEP_2_TRIGGER.y,
-      vy: 300,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
       onGround: false,
     };
     state = step(state, noInput, 1 / 60);
-    expect(state.traps.movingStep.triggered).toBe(true);
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
 
     // Immediately after triggering, it has snapped away — far enough that the
     // jump that expected to land on it now lands on nothing.
-    expect(movingStepRect(state.traps.movingStep)).toEqual({
-      ...LEVEL2_STEP_2,
-      x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE,
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual({
+      ...LEVEL2_CHASM_2,
+      x: LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE,
     });
 
     // Mid-way through its glide back it's somewhere in between.
-    state.traps.movingStep.timer = MOVING_STEP_SHIFT_DELAY + MOVING_STEP_RETURN_DURATION / 2;
-    const mid = movingStepRect(state.traps.movingStep);
-    expect(mid.x).toBeGreaterThan(LEVEL2_STEP_2.x);
-    expect(mid.x).toBeLessThan(LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE);
+    state.traps.chasmPlatform.timer = MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION / 2;
+    const mid = chasmPlatformRect(state.traps.chasmPlatform);
+    expect(mid.x).toBeGreaterThan(LEVEL2_CHASM_2.x);
+    expect(mid.x).toBeLessThan(LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE);
 
     // Once the return has fully elapsed, it's back exactly where it started —
     // permanently, since triggered only ever flips on once.
-    state.traps.movingStep.timer = MOVING_STEP_SHIFT_DELAY + MOVING_STEP_RETURN_DURATION;
-    expect(movingStepRect(state.traps.movingStep)).toEqual(LEVEL2_STEP_2);
+    state.traps.chasmPlatform.timer = MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION;
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
 
     const next = step(state, noInput, 1 / 60);
-    expect(next.traps.movingStep.triggered).toBe(true); // never re-arms
+    expect(next.traps.chasmPlatform.triggered).toBe(true); // never re-arms
+  });
+
+  it("does not move again if a fresh attempt re-overlaps the trigger zone in the same life", () => {
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
+      onGround: false,
+    };
+    state = step(state, noInput, 1 / 60);
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+
+    // Let it fully glide back and settle.
+    state.traps.chasmPlatform.timer = MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION;
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+
+    // A second genuine attempt through the exact same trigger zone, still
+    // within the same life, must not displace it again.
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
+      onGround: false,
+    };
+    const next = step(state, noInput, 1 / 60);
+    expect(chasmPlatformRect(next.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+  });
+
+  it("resets the chasm platform trap, and its position, after death and respawn — then arms fresh on the next approach", () => {
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
+      onGround: false,
+    };
+    state = step(state, noInput, 1 / 60);
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+
+    // Fall to death (the chasm has nothing underneath) and let the death
+    // animation finish so the level auto-respawns.
+    state.player = { ...state.player, y: DEATH_Y + 1, vy: 300, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+
+    const maxRespawnFrames = Math.ceil(RESPAWN_DELAY / (1 / 60)) + 2;
+    let respawnFrames = 0;
+    while (state.phase === "dead" && respawnFrames < maxRespawnFrames) {
+      state = step(state, noInput, 1 / 60);
+      respawnFrames++;
+    }
+
+    expect(state.phase).toBe("playing");
+    // Reset like every other trap — not carried over from the life that died.
+    expect(state.traps.chasmPlatform).toEqual({ triggered: false, timer: 0 });
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+
+    // The next genuine attempt triggers it again, exactly like a brand new
+    // life's first attempt.
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_2_TRIGGER.x + 5,
+      y: LEVEL2_CHASM_1.y - 60,
+      vy: -200,
+      onGround: false,
+    };
+    const next = step(state, noInput, 1 / 60);
+    expect(next.traps.chasmPlatform.triggered).toBe(true);
+  });
+
+  it("cannot be landed on via a full-speed jump held all the way across, once it has moved", () => {
+    const rightJump: Input = { left: false, right: true, jumpPressed: true };
+    const right: Input = { left: false, right: true, jumpPressed: false };
+
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w - PLAYER_W, // far right edge of CHASM_1
+      y: LEVEL2_CHASM_1.y - PLAYER_H,
+      onGround: true,
+    };
+
+    state = step(state, rightJump, 1 / 60);
+    let frames = 1;
+    const maxFrames = 120;
+    while (state.phase === "playing" && frames < maxFrames) {
+      state = step(state, right, 1 / 60);
+      frames++;
+    }
+
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+    expect(state.phase).toBe("dead"); // the platform moved away before this jump could land
+  });
+
+  it("baits the trap: releasing right the instant it fires drops the player safely back onto CHASM_1", () => {
+    const rightJump: Input = { left: false, right: true, jumpPressed: true };
+    const right: Input = { left: false, right: true, jumpPressed: false };
+    const hover: Input = { left: false, right: false, jumpPressed: false };
+
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w - PLAYER_W, // far right edge of CHASM_1
+      y: LEVEL2_CHASM_1.y - PLAYER_H,
+      onGround: true,
+    };
+
+    // Jump right; the trigger fires almost immediately, while still hanging
+    // over CHASM_1's own footprint.
+    state = step(state, rightJump, 1 / 60);
+    let armFrames = 0;
+    while (state.phase === "playing" && !state.traps.chasmPlatform.triggered && armFrames < 30) {
+      state = step(state, right, 1 / 60);
+      armFrames++;
+    }
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+
+    // Release right the moment it fires — no steering needed, just letting
+    // go — and gravity carries the player straight back down onto CHASM_1.
+    let fallFrames = 0;
+    while (state.phase === "playing" && !state.player.onGround && fallFrames < 90) {
+      state = step(state, hover, 1 / 60);
+      fallFrames++;
+    }
+
+    expect(state.phase).toBe("playing");
+    expect(state.player.onGround).toBe(true);
+    // Landed back on CHASM_1 specifically (the only solid ground anywhere
+    // near this drop), not fallen into the gap.
+    expect(state.player.x).toBeLessThan(LEVEL2_CHASM_1.x + LEVEL2_CHASM_1.w);
+    expect(state.player.x + PLAYER_W).toBeGreaterThan(LEVEL2_CHASM_1.x);
+  });
+
+  it("also resets the chasm platform trap when the level is recreated outright", () => {
+    const state: GameState = {
+      ...createInitialState(2),
+      traps: {
+        ...createInitialState(2).traps,
+        chasmPlatform: { triggered: true, timer: MOVING_PLATFORM_SHIFT_DELAY },
+      },
+    };
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+
+    const recreated = createInitialState(2);
+    expect(recreated.traps.chasmPlatform).toEqual({ triggered: false, timer: 0 });
+    expect(chasmPlatformRect(recreated.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
   });
 
   // A full scripted run over just the new content (staircase, chasm,
@@ -465,32 +737,100 @@ describe("play can be lost", () => {
       }
     };
 
-    run(right, 8);
-    hop("right", 15); // onto STEP_1
+    const crossStaircaseAndChasm1 = () => {
+      run(right, 6);
+      hop("right", 10); // onto STEP_1 — permanently static, never moves
+      expect(state.phase).toBe("playing");
+
+      run(right, 10);
+      hop("right", 10); // onto STEP_2 — also permanently static, a plain landing
+      expect(state.phase).toBe("playing");
+
+      run(right, 14);
+      hop("right", 8); // onto STEP_3 — the breakable platform, arms on landing
+      expect(state.phase).toBe("playing");
+      expect(state.traps.platform.triggered).toBe(true);
+
+      run(right, 7);
+      run(right, 32); // off the staircase, across the base ground to the chasm edge
+      hop("right", 20); // onto CHASM_1 — permanently safe
+      expect(state.phase).toBe("playing");
+    };
+
+    crossStaircaseAndChasm1();
+
+    // First genuine attempt to land on CHASM_2: the trap fires, the platform
+    // snaps away mid-air, and — unlike the staircase — there's nothing but
+    // open chasm underneath, so this first attempt is an unavoidable death.
+    hop("right", 38);
+    expect(state.traps.chasmPlatform.triggered).toBe(true);
+    expect(state.phase).toBe("dead");
+
+    // Let the death animation finish and the level auto-respawn. Every trap —
+    // including the chasm platform — resets with the rest of the level: the
+    // moving-platform trick is one-time only per life, not globally, so this
+    // new life gets its own first genuine try at it.
+    const maxRespawnFrames = Math.ceil(RESPAWN_DELAY / (1 / 60)) + 5;
+    let respawnFrames = 0;
+    while (state.phase === "dead" && respawnFrames < maxRespawnFrames) {
+      state = step(state, hover, 1 / 60);
+      respawnFrames++;
+    }
+    expect(state.phase).toBe("playing");
+    expect(state.traps.chasmPlatform).toEqual({ triggered: false, timer: 0 });
+    expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+
+    // Re-cross the earlier hazards exactly as the first time.
+    state.player = { ...state.player, x: 1650, y: GROUND_Y - PLAYER_H, onGround: true, vx: 0, vy: 0 };
+    crossStaircaseAndChasm1();
+
+    // The trap is fresh again this life. A full-speed jump held all the way
+    // across no longer survives — the platform now moves far enough away
+    // that this just runs into the far ground's near wall mid-fall and drops
+    // into the chasm. The intended route baits the trigger first: jump
+    // right, and it fires almost immediately, while still hanging over
+    // CHASM_1's own footprint — releasing "right" the instant it fires drops
+    // the player straight back down onto CHASM_1, safely, with the platform
+    // now away and gliding back.
+    run(rightJump, 1);
+    {
+      let i = 0;
+      while (state.phase === "playing" && !state.traps.chasmPlatform.triggered && i < 30) {
+        state = step(state, right, 1 / 60);
+        i++;
+      }
+    }
+    expect(state.traps.chasmPlatform.triggered).toBe(true); // triggered fresh, this life
+    {
+      let i = 0;
+      while (state.phase === "playing" && !state.player.onGround && i < 90) {
+        state = step(state, hover, 1 / 60);
+        i++;
+      }
+    }
+    expect(state.phase).toBe("playing"); // baited it, then fell straight back onto CHASM_1
+
+    // Wait for the platform to finish its glide back and settle before
+    // crossing for real.
+    {
+      const maxSettleFrames =
+        Math.ceil((MOVING_PLATFORM_SHIFT_DELAY + MOVING_PLATFORM_RETURN_DURATION) / (1 / 60)) + 5;
+      let i = 0;
+      while (
+        state.phase === "playing" &&
+        chasmPlatformRect(state.traps.chasmPlatform).x !== LEVEL2_CHASM_2.x &&
+        i < maxSettleFrames
+      ) {
+        state = step(state, hover, 1 / 60);
+        i++;
+      }
+      expect(chasmPlatformRect(state.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
+    }
+
+    hop("right", 20); // now cross for real, onto the settled platform
     expect(state.phase).toBe("playing");
 
-    run(right, 15);
-    hop("right", 15); // first genuine attempt onto STEP_2 — the moving trap fires and this attempt misses
-    expect(state.traps.movingStep.triggered).toBe(true);
-    expect(state.phase).toBe("playing"); // survives the miss, lands on the base ground below
-
-    run(hover, 40); // wait for the platform to fully glide back and settle permanently
-    run(left, 3); // reposition under where it now rests
-    hop("right", 4); // second, real landing onto STEP_2 now that it's back for good
-    expect(state.phase).toBe("playing");
-
-    run(right, 20);
-    hop("right", 12); // onto STEP_3 — the breakable platform, arms on landing
-    expect(state.phase).toBe("playing");
-    expect(state.traps.platform.triggered).toBe(true);
-
-    run(right, 10);
-    run(right, 47); // off the staircase, across the base ground to the chasm edge
-    hop("right", 30); // onto CHASM_1
-    expect(state.phase).toBe("playing");
-    hop("right", 55); // onto CHASM_2
-    expect(state.phase).toBe("playing");
-    hop("right", 40); // onto the final ground segment
+    hop("right", 12); // off CHASM_2 onto the final ground segment
     expect(state.phase).toBe("playing");
 
     // Walk toward the fake door — arming it slams it shut — but stop short of
@@ -509,14 +849,14 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("playing");
 
     // Backtrack across the same chasm platforms to the real door.
-    run(left, 18);
-    hop("left", 40); // back onto CHASM_2
+    run(left, 12);
+    hop("left", 28); // back onto CHASM_2
     expect(state.phase).toBe("playing");
-    run(left, 5);
-    hop("left", 44); // back onto CHASM_1
+    run(left, 4);
+    hop("left", 30); // back onto CHASM_1
     expect(state.phase).toBe("playing");
-    run(left, 5);
-    hop("left", 30); // back across the real door
+    run(left, 4);
+    hop("left", 21); // back across the real door
     expect(state.phase).toBe("entering"); // not won yet — the entry animation is playing
 
     const maxEnterFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
