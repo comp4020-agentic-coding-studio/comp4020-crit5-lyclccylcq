@@ -23,8 +23,24 @@ export const COLLAPSE_DELAY = 0.35;
 export const SPIKE_DELAY = 0.45;
 // A breakable platform gives way this long after the player lands on it.
 export const PLATFORM_BREAK_DELAY = 0.25;
+// How long a death holds on the shatter animation before respawning.
+export const RESPAWN_DELAY = 0.5;
+// How long the "entering the door" animation plays before the level changes.
+export const DOOR_ENTER_DELAY = 0.45;
+// Of that total, how long the door itself takes to swing open — the player
+// only starts moving into the doorway and fading once this has elapsed.
+export const DOOR_OPEN_DURATION = 0.18;
+// How long the level-name card stays up once a level is first entered.
+export const LEVEL_BANNER_DURATION = 1.2;
+// How long the second staircase step stays displaced before gliding back.
+export const MOVING_STEP_SHIFT_DELAY = 0.5;
+// How far it suddenly moves away — far enough that the jump that expected to
+// land on it lands on nothing instead.
+export const MOVING_STEP_SHIFT_DISTANCE = 160;
+// How long the smooth glide back to its original spot takes.
+export const MOVING_STEP_RETURN_DURATION = 0.35;
 
-export type Phase = "playing" | "dead" | "won";
+export type Phase = "playing" | "dead" | "entering" | "won";
 export type Level = 1 | 2;
 
 export interface Rect {
@@ -61,6 +77,7 @@ export interface Traps {
   spikes: TrapRuntime;
   fakeDoor: TrapRuntime;
   platform: TrapRuntime;
+  movingStep: TrapRuntime;
 }
 
 // Shared footprint for every door in the game — Level 1's honest exit, and
@@ -74,6 +91,8 @@ export interface GameState {
   level: Level;
   player: Player;
   traps: Traps;
+  phaseTime: number;
+  banner: { timer: number } | null;
 }
 
 // --- Level 1: the honest teaching level -------------------------------------
@@ -119,11 +138,23 @@ export const LEVEL2_GROUND_SEGMENTS: Rect[] = [
 ];
 
 // A short ascending staircase: each step is a comfortable +40 relative climb,
-// blocking its full vertical column like ordinary ground. The top step
-// (LEVEL2_STEP_3) is the one deceptive breakable platform — see part 4 below.
+// blocking its full vertical column like ordinary ground. STEP_2 is a
+// one-time deceptive moving platform (see LEVEL2_STEP_2_TRIGGER below) and
+// STEP_3 is the deceptive breakable platform — see part 4 below.
 export const LEVEL2_STEP_1: Rect = { x: 1680, y: GROUND_Y - 40, w: 90, h: 400 };
 export const LEVEL2_STEP_2: Rect = { x: 1770, y: GROUND_Y - 80, w: 130, h: 400 };
 export const LEVEL2_STEP_3: Rect = { x: 1900, y: GROUND_Y - 120, w: 70, h: 400 };
+
+// A thin band just above STEP_2: the player passing through it while falling
+// toward the step — genuinely about to land — is what counts as "the first
+// attempt to reach it". Looking at, jumping past, or standing beside it never
+// overlaps this band, so nothing here arms just from proximity.
+export const LEVEL2_STEP_2_TRIGGER: Rect = {
+  x: LEVEL2_STEP_2.x,
+  y: LEVEL2_STEP_2.y - 30,
+  w: LEVEL2_STEP_2.w,
+  h: 30,
+};
 
 // A row of thin floating platforms crossing the chasm at 2150-2570. Both stay
 // permanently safe: the fake-door trick forces a backtrack across this same
@@ -168,8 +199,9 @@ export function levelWidth(level: Level): number {
   return level === 1 ? LEVEL1_WIDTH : LEVEL2_WIDTH;
 }
 
-export function createInitialState(level: Level = 1): GameState {
+export function createInitialState(level: Level = 1, opts?: { announce?: boolean }): GameState {
   const spawn = level === 1 ? LEVEL1_SPAWN : LEVEL2_SPAWN;
+  const announce = opts?.announce ?? true;
   return {
     phase: "playing",
     level,
@@ -180,7 +212,10 @@ export function createInitialState(level: Level = 1): GameState {
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
+      movingStep: { triggered: false, timer: 0 },
     },
+    phaseTime: 0,
+    banner: announce ? { timer: 0 } : null,
   };
 }
 
@@ -214,20 +249,32 @@ function standingOn(player: Player, rect: Rect): boolean {
   );
 }
 
+// STEP_2's current position: ordinary and stationary until its trap has
+// fired, then instantly displaced sideways (a sudden move, not an animated
+// one — nothing should be visibly "in transit"), then gliding smoothly back
+// to its exact original spot once the shift delay elapses, where it settles
+// permanently.
+export function movingStepRect(trap: TrapRuntime): Rect {
+  if (!trap.triggered) return LEVEL2_STEP_2;
+  if (trap.timer < MOVING_STEP_SHIFT_DELAY) {
+    return { ...LEVEL2_STEP_2, x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE };
+  }
+  const t = Math.min((trap.timer - MOVING_STEP_SHIFT_DELAY) / MOVING_STEP_RETURN_DURATION, 1);
+  return { ...LEVEL2_STEP_2, x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE * (1 - t) };
+}
+
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
 export function solidRects(traps: Traps): Rect[] {
   const rects = [
     ...LEVEL2_GROUND_SEGMENTS,
     LEVEL2_STEP_1,
-    LEVEL2_STEP_2,
+    movingStepRect(traps.movingStep),
     LEVEL2_CHASM_1,
     LEVEL2_CHASM_2,
   ];
   if (!isGone(traps.collapse)) rects.push(LEVEL2_COLLAPSE_TILE, { ...LEVEL2_COLLAPSE_TILE, h: 400 });
   if (!isGone(traps.platform, PLATFORM_BREAK_DELAY)) rects.push(LEVEL2_STEP_3);
   if (traps.hiddenBlock.triggered) rects.push(LEVEL2_HIDDEN_BLOCK);
-  // Once triggered, the fake door isn't a door anymore — it's a wall.
-  if (traps.fakeDoor.triggered) rects.push({ ...LEVEL2_FAKE_DOOR, y: 0, h: GROUND_Y });
   return rects;
 }
 
@@ -300,16 +347,15 @@ function stepLevel1(state: GameState, input: Input, dt: number): GameState {
   const player = integratePlayer(state.player, input, dt, LEVEL1_GROUND_SEGMENTS, LEVEL1_WIDTH);
 
   if (player.x + PLAYER_W >= LEVEL1_GOAL.x) {
-    // Reaching Level 1's goal advances straight into Level 2 — same call that
-    // builds a fresh game handles phase, spawn position, and untriggered
-    // traps all at once, so the transition can't accidentally forget one.
-    return createInitialState(2);
+    // Reaching the goal plays a short door-entry animation before the level
+    // actually changes — see tickEntering().
+    return { ...state, player, phase: "entering", phaseTime: 0 };
   }
   if (player.y > DEATH_Y) {
-    return { ...state, player, phase: "dead" };
+    return { ...state, player, phase: "dead", phaseTime: 0 };
   }
   if (rectsOverlap(playerRect(player), LEVEL1_SPIKE_HAZARD)) {
-    return { ...state, player, phase: "dead" };
+    return { ...state, player, phase: "dead", phaseTime: 0 };
   }
   return { ...state, player };
 }
@@ -321,6 +367,7 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
     spikes: { ...state.traps.spikes },
     fakeDoor: { ...state.traps.fakeDoor },
     platform: { ...state.traps.platform },
+    movingStep: { ...state.traps.movingStep },
   };
 
   // Trigger checks use the position the player entered this frame with, so a
@@ -342,8 +389,18 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   if (!traps.fakeDoor.triggered && rectsOverlap(playerRect(state.player), LEVEL2_FAKE_DOOR_TRIGGER)) {
     traps.fakeDoor = { triggered: true, timer: 0 };
   }
+  // Falling toward the step, not jumping past or resting beside it, is what
+  // counts as a genuine attempt to land on it — and it only ever fires once.
+  if (
+    !traps.movingStep.triggered &&
+    state.player.vy > 0 &&
+    rectsOverlap(playerRect(state.player), LEVEL2_STEP_2_TRIGGER)
+  ) {
+    traps.movingStep = { triggered: true, timer: 0 };
+  }
   if (traps.spikes.triggered) traps.spikes.timer += dt;
   if (traps.collapse.triggered) traps.collapse.timer += dt;
+  if (traps.movingStep.triggered) traps.movingStep.timer += dt;
 
   const player = integratePlayer(state.player, input, dt, solidRects(traps), LEVEL2_WIDTH);
 
@@ -360,20 +417,50 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   // sprung — otherwise the player would win by accident walking past it on
   // the way to the fake door in the first place.
   if (traps.fakeDoor.triggered && rectsOverlap(playerRect(player), LEVEL2_REAL_DOOR)) {
-    phase = "won";
+    phase = "entering";
   } else if (player.y > DEATH_Y) {
     phase = "dead";
   } else if (spikesUp(traps.spikes) && rectsOverlap(playerRect(player), LEVEL2_SPIKE_ZONE)) {
     phase = "dead";
+  } else if (traps.fakeDoor.triggered && rectsOverlap(playerRect(player), LEVEL2_FAKE_DOOR)) {
+    // The fake door is never solid — like spikes, it's lethal on contact once armed.
+    phase = "dead";
   }
 
-  return { phase, level: 2, player, traps };
+  return { ...state, phase, player, traps, phaseTime: 0 };
 }
 
-/** Advance the simulation by one frame. A no-op once the round has ended. */
+/**
+ * Advance the simulation by one frame. Drives "dead"/"entering" itself so
+ * their timing is plain, testable state — a no-op only once "won" is reached.
+ */
 export function step(state: GameState, input: Input, dt: number): GameState {
+  if (state.phase === "dead") return tickDead(state, dt);
+  if (state.phase === "entering") return tickEntering(state, dt);
   if (state.phase !== "playing") return state;
-  return state.level === 1 ? stepLevel1(state, input, dt) : stepLevel2(state, input, dt);
+
+  const withBanner = state.banner
+    ? {
+        ...state,
+        banner:
+          state.banner.timer + dt >= LEVEL_BANNER_DURATION ? null : { timer: state.banner.timer + dt },
+      }
+    : state;
+  return withBanner.level === 1
+    ? stepLevel1(withBanner, input, dt)
+    : stepLevel2(withBanner, input, dt);
+}
+
+function tickDead(state: GameState, dt: number): GameState {
+  const phaseTime = state.phaseTime + dt;
+  if (phaseTime >= RESPAWN_DELAY) return createInitialState(state.level, { announce: false });
+  return { ...state, phaseTime };
+}
+
+function tickEntering(state: GameState, dt: number): GameState {
+  const phaseTime = state.phaseTime + dt;
+  if (phaseTime < DOOR_ENTER_DELAY) return { ...state, phaseTime };
+  return state.level === 1 ? createInitialState(2) : { ...state, phase: "won", phaseTime: 0 };
 }
 
 export function cameraX(playerX: number, width: number): number {

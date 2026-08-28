@@ -11,7 +11,6 @@ import {
   LEVEL2_SPIKE_ZONE,
   LEVEL2_COLLAPSE_TILE,
   LEVEL2_STEP_1,
-  LEVEL2_STEP_2,
   LEVEL2_STEP_3,
   LEVEL2_CHASM_1,
   LEVEL2_CHASM_2,
@@ -20,8 +19,13 @@ import {
   PLAYER_W,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  RESPAWN_DELAY,
+  DOOR_ENTER_DELAY,
+  DOOR_OPEN_DURATION,
+  LEVEL_BANNER_DURATION,
   isGone,
   spikesUp,
+  movingStepRect,
 } from "./engine.ts";
 import type { GameState, Rect } from "./engine.ts";
 
@@ -65,11 +69,14 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState, camera: 
   drawHiddenBlock(ctx, state);
   drawSpikeHazards(ctx, state);
   drawDoors(ctx, state);
-  drawPlayer(ctx, state);
+  if (state.phase === "dead") drawShatter(ctx, state);
+  else if (state.phase === "entering") drawEntering(ctx, state);
+  else drawPlayer(ctx, state);
 
   ctx.restore();
 
   drawPhaseOverlay(ctx, state.phase);
+  drawBanner(ctx, state);
 }
 
 function drawClouds(ctx: CanvasRenderingContext2D, camera: number): void {
@@ -132,15 +139,19 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
   if (!isGone(state.traps.collapse)) {
     // Always drawn as ordinary ground, armed or not — no crack ever shows
     // before the tile actually gives way, only the abrupt disappearance once
-    // it's gone.
-    groundSlab(ctx, LEVEL2_COLLAPSE_TILE, false);
+    // it's gone. Drawn at the neighbouring segments' full height (not the
+    // tile's own thin collision-rect height), so no sliver of sky ever shows
+    // beneath it before it collapses.
+    groundSlab(ctx, { ...LEVEL2_COLLAPSE_TILE, h: 400 }, false);
   }
 
-  // The staircase: the two lower steps are permanently safe and drawn as
-  // plain ground. The top step looks identical until it's been landed on —
-  // only then does it switch to a "breaking" look, and only until it's gone.
+  // The staircase: the bottom step is permanently safe and drawn as plain
+  // ground. The middle step is drawn wherever its trap currently puts it —
+  // ordinary ground either way, with zero visual difference before it's ever
+  // moved. The top step looks identical until it's been landed on — only
+  // then does it switch to a "breaking" look, and only until it's gone.
   groundSlab(ctx, LEVEL2_STEP_1, false);
-  groundSlab(ctx, LEVEL2_STEP_2, false);
+  groundSlab(ctx, movingStepRect(state.traps.movingStep), false);
   if (!isGone(state.traps.platform, PLATFORM_BREAK_DELAY)) {
     groundSlab(ctx, LEVEL2_STEP_3, state.traps.platform.triggered);
   }
@@ -201,6 +212,26 @@ function drawDoor(ctx: CanvasRenderingContext2D, rect: Rect): void {
   ctx.fill();
 }
 
+// The real door mid-transition: the panel swings open (shrinking from its
+// hinge, revealing a dark doorway behind it) before the player ever moves —
+// so the door is visibly open before anything happens to the player.
+function drawDoorOpening(ctx: CanvasRenderingContext2D, rect: Rect, phaseTime: number): void {
+  const t = Math.min(phaseTime / DOOR_OPEN_DURATION, 1);
+  ctx.fillStyle = DOOR_FRAME;
+  ctx.fillRect(rect.x - 3, rect.y - 3, rect.w + 6, rect.h + 3);
+  ctx.fillStyle = "#241c14";
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  const panelW = rect.w * (1 - t);
+  ctx.fillStyle = DOOR_PANEL;
+  ctx.fillRect(rect.x, rect.y, panelW, rect.h);
+  if (panelW > 6) {
+    ctx.fillStyle = DOOR_KNOB;
+    ctx.beginPath();
+    ctx.arc(rect.x + panelW - 8, rect.y + rect.h * 0.55, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 // The same footprint, but no longer a door — a flat boarded wall block, once
 // the fake door has been walked up to and has transformed.
 function drawBlockedDoor(ctx: CanvasRenderingContext2D, rect: Rect): void {
@@ -218,27 +249,30 @@ function drawBlockedDoor(ctx: CanvasRenderingContext2D, rect: Rect): void {
 }
 
 function drawDoors(ctx: CanvasRenderingContext2D, state: GameState): void {
+  const entering = state.phase === "entering";
   if (state.level === 1) {
-    drawDoor(ctx, LEVEL1_GOAL);
+    if (entering) drawDoorOpening(ctx, LEVEL1_GOAL, state.phaseTime);
+    else drawDoor(ctx, LEVEL1_GOAL);
     return;
   }
   if (state.traps.fakeDoor.triggered) {
     drawBlockedDoor(ctx, LEVEL2_FAKE_DOOR);
-    drawDoor(ctx, LEVEL2_REAL_DOOR);
+    if (entering) drawDoorOpening(ctx, LEVEL2_REAL_DOOR, state.phaseTime);
+    else drawDoor(ctx, LEVEL2_REAL_DOOR);
   } else {
     drawDoor(ctx, LEVEL2_FAKE_DOOR);
   }
 }
 
 function drawPlayer(ctx: CanvasRenderingContext2D, state: GameState): void {
-  const { player, phase } = state;
-  const squash = phase === "playing" && Math.abs(player.vy) > 200 ? 0.85 : 1;
+  const { player } = state;
+  const squash = Math.abs(player.vy) > 200 ? 0.85 : 1;
   const w = PLAYER_W;
   const h = PLAYER_H * squash;
   const x = player.x;
   const y = player.y + (PLAYER_H - h);
 
-  ctx.fillStyle = phase === "dead" ? "#c94b4b" : PLAYER_BODY;
+  ctx.fillStyle = PLAYER_BODY;
   radiusedRect(ctx, x, y, w, h, 8);
   ctx.fill();
 
@@ -247,6 +281,89 @@ function drawPlayer(ctx: CanvasRenderingContext2D, state: GameState): void {
   ctx.beginPath();
   ctx.arc(x + w / 2 + eyeOffset, y + h * 0.35, 2.6, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// Fixed, deterministic fragment directions — no Math.random, so the shatter
+// is reproducible frame-for-frame in tests and in play alike.
+const SHATTER_OFFSETS = [
+  { dx: -1, dy: -0.6 },
+  { dx: 1, dy: -0.8 },
+  { dx: -0.8, dy: 0.4 },
+  { dx: 0.9, dy: 0.5 },
+  { dx: -0.3, dy: -1 },
+  { dx: 0.4, dy: 1 },
+];
+
+// Death: the player breaks into a few pieces that fly apart and fade, rather
+// than simply vanishing — a short, bounded animation since it's driven by the
+// same phaseTime the engine uses to time the respawn itself.
+function drawShatter(ctx: CanvasRenderingContext2D, state: GameState): void {
+  const { player, phaseTime } = state;
+  const t = Math.min(phaseTime / RESPAWN_DELAY, 1);
+  const cx = player.x + PLAYER_W / 2;
+  const cy = player.y + PLAYER_H / 2;
+  const pieceSize = 9;
+  const travel = 26 * t;
+
+  ctx.save();
+  ctx.globalAlpha = 1 - t;
+  ctx.fillStyle = PLAYER_BODY;
+  for (const { dx, dy } of SHATTER_OFFSETS) {
+    const x = cx + dx * travel - pieceSize / 2;
+    const y = cy + dy * travel - pieceSize / 2;
+    ctx.fillRect(x, y, pieceSize, pieceSize);
+  }
+  ctx.restore();
+}
+
+// How far the player visibly steps into the doorway before disappearing.
+const DOOR_WALK_DISTANCE = 16;
+
+// Reaching the real door: first the door swings open with the player still
+// fully present (see drawDoorOpening, called from drawDoors before this),
+// then — only once it's open — the player steps a little further into the
+// doorway while shrinking and fading, rather than vanishing on contact.
+function drawEntering(ctx: CanvasRenderingContext2D, state: GameState): void {
+  if (state.phaseTime < DOOR_OPEN_DURATION) {
+    drawPlayer(ctx, state);
+    return;
+  }
+
+  const { player, phaseTime, level } = state;
+  const doorRect = level === 1 ? LEVEL1_GOAL : LEVEL2_REAL_DOOR;
+  const walkSpan = DOOR_ENTER_DELAY - DOOR_OPEN_DURATION;
+  const t = walkSpan > 0 ? Math.min((phaseTime - DOOR_OPEN_DURATION) / walkSpan, 1) : 1;
+  const dir = doorRect.x + doorRect.w / 2 >= player.x + PLAYER_W / 2 ? 1 : -1;
+  const scale = 1 - t;
+  const w = PLAYER_W * scale;
+  const h = PLAYER_H * scale;
+  const centerX = player.x + PLAYER_W / 2 + dir * DOOR_WALK_DISTANCE * t;
+  const x = centerX - w / 2;
+  const y = player.y + (PLAYER_H - h);
+
+  ctx.save();
+  ctx.globalAlpha = scale;
+  ctx.fillStyle = PLAYER_BODY;
+  radiusedRect(ctx, x, y, w, h, Math.min(8, w / 2, h / 2));
+  ctx.fill();
+  ctx.restore();
+}
+
+// A brief, text-only "Level N" card — identifies the level, nothing more, and
+// disappears on its own; no gameplay hints ever ride along with it.
+function drawBanner(ctx: CanvasRenderingContext2D, state: GameState): void {
+  if (!state.banner) return;
+  const fadeStart = LEVEL_BANNER_DURATION - 0.3;
+  const alpha = state.banner.timer > fadeStart ? Math.max(0, 1 - (state.banner.timer - fadeStart) / 0.3) : 1;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(20,30,40,0.55)";
+  ctx.font = "bold 20px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`Level ${state.level}`, VIEWPORT_WIDTH / 2, 40);
+  ctx.restore();
 }
 
 function radiusedRect(

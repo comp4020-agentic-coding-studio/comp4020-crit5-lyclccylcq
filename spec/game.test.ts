@@ -23,6 +23,13 @@ import {
   LEVEL2_CHASM_2,
   PLATFORM_BREAK_DELAY,
   SPIKE_DELAY,
+  RESPAWN_DELAY,
+  DOOR_ENTER_DELAY,
+  LEVEL2_STEP_2_TRIGGER,
+  MOVING_STEP_SHIFT_DELAY,
+  MOVING_STEP_SHIFT_DISTANCE,
+  MOVING_STEP_RETURN_DURATION,
+  movingStepRect,
   GROUND_Y,
   PLAYER_H,
   PLAYER_W,
@@ -106,7 +113,7 @@ describe("play can be lost", () => {
     expect(next.phase).toBe("dead");
   });
 
-  it("advances to level 2 when the level 1 player reaches the goal", () => {
+  it("plays a short door-entry animation before advancing to level 2", () => {
     const state = createInitialState(1);
     state.player = {
       ...state.player,
@@ -115,12 +122,22 @@ describe("play can be lost", () => {
       onGround: true,
     };
 
-    const next = step(state, noInput, 1 / 60);
+    let next = step(state, noInput, 1 / 60);
+    expect(next.level).toBe(1); // not switched yet — the entry animation is playing
+    expect(next.phase).toBe("entering");
+
+    const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (next.phase === "entering" && frames < maxFrames) {
+      next = step(next, noInput, 1 / 60);
+      frames++;
+    }
 
     expect(next.level).toBe(2);
     expect(next.phase).toBe("playing");
     expect(next.player.x).toBe(LEVEL2_SPAWN.x);
     expect(next.player.y).toBe(LEVEL2_SPAWN.y);
+    expect(next.banner).toEqual({ timer: 0 }); // Level 2's first arrival announces itself
   });
 
   it("ends the round when the level 2 player falls below the death boundary", () => {
@@ -190,25 +207,42 @@ describe("play can be lost", () => {
     expect(next.traps.fakeDoor.triggered).toBe(true);
   });
 
-  it("blocks the player from passing through the fake door once it has transformed", () => {
+  it("kills the player on contact with the fake door once it has transformed, same as a spike", () => {
     const state = createInitialState(2);
     state.traps.fakeDoor = { triggered: true, timer: 0 };
     state.player = {
       ...state.player,
-      x: LEVEL2_FAKE_DOOR.x - PLAYER_W - 2,
+      x: LEVEL2_FAKE_DOOR.x,
       y: GROUND_Y - PLAYER_H,
-      vx: 0,
       onGround: true,
     };
-    const input = { left: false, right: true, jumpPressed: false };
 
-    const next = step(state, input, 1 / 60);
+    const next = step(state, noInput, 1 / 60);
 
-    expect(next.player.x + PLAYER_W).toBeLessThanOrEqual(LEVEL2_FAKE_DOOR.x);
+    expect(next.phase).toBe("dead");
+  });
+
+  it("does not treat an untriggered fake door as any kind of hazard", () => {
+    const state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_FAKE_DOOR.x,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
     expect(next.phase).toBe("playing");
   });
 
-  it("wins the game when the level 2 player reaches the real door after the fake door has triggered", () => {
+  it("no longer blocks the player physically at the fake door once it has transformed", () => {
+    const state = createInitialState(2);
+    state.traps.fakeDoor = { triggered: true, timer: 0 };
+    expect(solidRects(state.traps)).not.toContainEqual({ ...LEVEL2_FAKE_DOOR, y: 0, h: GROUND_Y });
+  });
+
+  it("plays a short door-entry animation before winning at the real door", () => {
     const state = createInitialState(2);
     state.traps.fakeDoor = { triggered: true, timer: 0 };
     state.player = {
@@ -218,9 +252,36 @@ describe("play can be lost", () => {
       onGround: true,
     };
 
-    const next = step(state, noInput, 1 / 60);
+    let next = step(state, noInput, 1 / 60);
+    expect(next.phase).toBe("entering"); // not won yet — the entry animation is playing
+
+    const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (next.phase === "entering" && frames < maxFrames) {
+      next = step(next, noInput, 1 / 60);
+      frames++;
+    }
 
     expect(next.phase).toBe("won");
+  });
+
+  it("auto-respawns to playing after the death animation, without re-announcing the level", () => {
+    let state = createInitialState(2);
+    state.player = { ...state.player, x: 400, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+
+    const maxFrames = Math.ceil(RESPAWN_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (state.phase === "dead" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("playing");
+    expect(state.level).toBe(2);
+    expect(state.player.x).toBe(LEVEL2_SPAWN.x);
+    expect(state.banner).toBeNull();
   });
 
   it("repairs the old leftover terrain into one continuous ground segment, no island or gap", () => {
@@ -241,6 +302,7 @@ describe("play can be lost", () => {
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: true, timer: 0 },
       platform: { triggered: true, timer: 0 },
+      movingStep: { triggered: false, timer: 0 },
     });
 
     for (const rects of [untouched, midCollapse]) {
@@ -299,6 +361,75 @@ describe("play can be lost", () => {
     expect(solidRects(state.traps)).not.toContainEqual(LEVEL2_STEP_3);
   });
 
+  it("does not arm the moving step just from passing beside or under it", () => {
+    const state = createInitialState(2);
+    // Jumping up right beside it, moving upward past it — not a falling
+    // approach toward landing on top.
+    state.player = {
+      ...state.player,
+      x: LEVEL2_STEP_2.x - PLAYER_W - 2,
+      y: LEVEL2_STEP_2.y,
+      vy: -300,
+      onGround: false,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.traps.movingStep.triggered).toBe(false);
+    expect(movingStepRect(next.traps.movingStep)).toEqual(LEVEL2_STEP_2);
+  });
+
+  it("arms the moving step on a genuine falling approach toward it, and it looks untouched right up until then", () => {
+    const state = createInitialState(2);
+    expect(movingStepRect(state.traps.movingStep)).toEqual(LEVEL2_STEP_2);
+
+    state.player = {
+      ...state.player,
+      x: LEVEL2_STEP_2.x + 10,
+      y: LEVEL2_STEP_2_TRIGGER.y,
+      vy: 300,
+      onGround: false,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.traps.movingStep.triggered).toBe(true);
+  });
+
+  it("suddenly displaces the step once triggered, then glides it back, then leaves it permanently in place", () => {
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_STEP_2.x + 10,
+      y: LEVEL2_STEP_2_TRIGGER.y,
+      vy: 300,
+      onGround: false,
+    };
+    state = step(state, noInput, 1 / 60);
+    expect(state.traps.movingStep.triggered).toBe(true);
+
+    // Immediately after triggering, it has snapped away — far enough that the
+    // jump that expected to land on it now lands on nothing.
+    expect(movingStepRect(state.traps.movingStep)).toEqual({
+      ...LEVEL2_STEP_2,
+      x: LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE,
+    });
+
+    // Mid-way through its glide back it's somewhere in between.
+    state.traps.movingStep.timer = MOVING_STEP_SHIFT_DELAY + MOVING_STEP_RETURN_DURATION / 2;
+    const mid = movingStepRect(state.traps.movingStep);
+    expect(mid.x).toBeGreaterThan(LEVEL2_STEP_2.x);
+    expect(mid.x).toBeLessThan(LEVEL2_STEP_2.x + MOVING_STEP_SHIFT_DISTANCE);
+
+    // Once the return has fully elapsed, it's back exactly where it started —
+    // permanently, since triggered only ever flips on once.
+    state.traps.movingStep.timer = MOVING_STEP_SHIFT_DELAY + MOVING_STEP_RETURN_DURATION;
+    expect(movingStepRect(state.traps.movingStep)).toEqual(LEVEL2_STEP_2);
+
+    const next = step(state, noInput, 1 / 60);
+    expect(next.traps.movingStep.triggered).toBe(true); // never re-arms
+  });
+
   // A full scripted run over just the new content (staircase, chasm,
   // backtrack), starting a bit past the pre-existing collapse tile and spike
   // zone — those hazards already have their own dedicated tests above and
@@ -339,7 +470,13 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("playing");
 
     run(right, 15);
-    hop("right", 15); // onto STEP_2
+    hop("right", 15); // first genuine attempt onto STEP_2 — the moving trap fires and this attempt misses
+    expect(state.traps.movingStep.triggered).toBe(true);
+    expect(state.phase).toBe("playing"); // survives the miss, lands on the base ground below
+
+    run(hover, 40); // wait for the platform to fully glide back and settle permanently
+    run(left, 3); // reposition under where it now rests
+    hop("right", 4); // second, real landing onto STEP_2 now that it's back for good
     expect(state.phase).toBe("playing");
 
     run(right, 20);
@@ -356,7 +493,18 @@ describe("play can be lost", () => {
     hop("right", 40); // onto the final ground segment
     expect(state.phase).toBe("playing");
 
-    run(right, 100); // on to the fake door — it slams shut
+    // Walk toward the fake door — arming it slams it shut — but stop short of
+    // actually touching it: it's lethal on contact now, like a spike, not a
+    // wall to be stopped by.
+    let approachFrames = 0;
+    while (
+      state.phase === "playing" &&
+      state.player.x + PLAYER_W < LEVEL2_FAKE_DOOR.x - 4 &&
+      approachFrames < 300
+    ) {
+      state = step(state, right, 1 / 60);
+      approachFrames++;
+    }
     expect(state.traps.fakeDoor.triggered).toBe(true);
     expect(state.phase).toBe("playing");
 
@@ -369,6 +517,14 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("playing");
     run(left, 5);
     hop("left", 30); // back across the real door
+    expect(state.phase).toBe("entering"); // not won yet — the entry animation is playing
+
+    const maxEnterFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let enterFrames = 0;
+    while (state.phase === "entering" && enterFrames < maxEnterFrames) {
+      state = step(state, left, 1 / 60);
+      enterFrames++;
+    }
 
     expect(state.phase).toBe("won");
   });

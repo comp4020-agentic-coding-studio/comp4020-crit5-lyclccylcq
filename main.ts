@@ -17,10 +17,7 @@ const context = canvas.getContext("2d");
 if (!context) throw new Error("2d context unavailable");
 const ctx: CanvasRenderingContext2D = context;
 
-const RESPAWN_DELAY = 0.5;
-
 let state: GameState = createInitialState(1);
-let deathTimer = 0;
 
 const held = { left: false, right: false };
 let jumpQueued = false;
@@ -50,7 +47,6 @@ window.addEventListener("keyup", (event) => {
 
 function restartTo(level: Level): void {
   state = createInitialState(level);
-  deathTimer = 0;
   document.body.dataset.gameState = state.phase;
 }
 
@@ -61,15 +57,14 @@ function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 1 / 30);
   last = now;
 
-  if (state.phase === "playing") {
+  if (state.phase !== "won") {
     const input: Input = { left: held.left, right: held.right, jumpPressed: jumpQueued };
     jumpQueued = false;
     const previousPhase = state.phase;
     state = step(state, input, dt);
     if (previousPhase !== state.phase) document.body.dataset.gameState = state.phase;
-  } else if (state.phase === "dead") {
-    deathTimer += dt;
-    if (deathTimer >= RESPAWN_DELAY) restartTo(state.level); // respawn at the start of the current level
+  } else {
+    jumpQueued = false;
   }
 
   render(ctx, state, cameraX(state.player.x, levelWidth(state.level)));
