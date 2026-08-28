@@ -8,7 +8,7 @@ body {
 }
 
 main {
-  max-width: 60rem;
+  max-width: 82rem;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -21,8 +21,43 @@ a {
 }
 
 header {
-  max-width: 60rem;
+  max-width: 82rem;
   margin: 0 auto;
+}
+
+header nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.level-select {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.level-select button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid #45505a;
+  background: transparent;
+  color: #cfe9ff;
+  cursor: pointer;
+}
+
+.level-select button:hover {
+  border-color: #8fd3ff;
+}
+
+.level-select button[aria-pressed="true"] {
+  background: #8fd3ff;
+  border-color: #8fd3ff;
+  color: #14202a;
+  font-weight: 600;
 }
 
 .game-title {
@@ -34,8 +69,9 @@ header {
 #game {
   display: block;
   width: 100%;
-  max-width: 960px;
-  aspect-ratio: 960 / 360;
+  /* Matches VIEWPORT_WIDTH/VIEWPORT_HEIGHT in game/engine.ts — keep both in sync. */
+  max-width: 1280px;
+  aspect-ratio: 1280 / 480;
   background: #bdeaff;
   border-radius: 12px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);

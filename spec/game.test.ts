@@ -6,7 +6,13 @@ import {
   createInitialState,
   step,
   solidRects,
+  cameraX,
+  levelWidth,
   DEATH_Y,
+  VIEWPORT_WIDTH,
+  VIEWPORT_HEIGHT,
+  LEVEL1_WIDTH,
+  LEVEL2_WIDTH,
   LEVEL1_GOAL,
   LEVEL1_SPIKE_HAZARD,
   LEVEL2_SPAWN,
@@ -37,6 +43,17 @@ import {
   PLAYER_W,
   MOVE_SPEED,
   COLLAPSE_DELAY,
+  LEVEL2_PIT,
+  LEVEL2_PIT_BLOCKER_HIGH_Y,
+  LEVEL2_PIT_BLOCKER_LOW_Y,
+  LEVEL2_HIDDEN_BLOCK,
+  pitBlockerRect,
+  pitBridged,
+  PIT_BLOCKER_DESCEND_TIME,
+  PIT_BLOCKER_BRIDGE_HOLD,
+  PIT_BLOCKER_ASCEND_TIME,
+  PIT_BLOCKER_WAIT_HIGH,
+  PIT_BLOCKER_PERIOD,
 } from "../game/engine.ts";
 import type { GameState, Input } from "../game/engine.ts";
 
@@ -79,6 +96,45 @@ describe("no tutorial anywhere", () => {
         tutorialWords,
       );
     }
+  });
+});
+
+describe("level selector in the nav bar", () => {
+  const home = pages.find(({ path }) => path.endsWith("index.html"));
+
+  it("keeps the existing Home link", () => {
+    const link = home?.doc.querySelector('nav a[href="./"]');
+    expect(link?.textContent?.trim()).toBe("Home");
+  });
+
+  it("offers a compact control to choose Level 1 or Level 2", () => {
+    const control = home?.doc.querySelector("#level-select");
+    expect(control).toBeTruthy();
+    const buttons = Array.from(control?.querySelectorAll("[data-level]") ?? []);
+    expect(buttons.map((b) => b.getAttribute("data-level")).sort()).toEqual(["1", "2"]);
+  });
+
+  it("marks Level 1 as the current selection on first load", () => {
+    const control = home?.doc.querySelector("#level-select");
+    const level1 = control?.querySelector('[data-level="1"]');
+    const level2 = control?.querySelector('[data-level="2"]');
+    expect(level1?.getAttribute("aria-pressed")).toBe("true");
+    expect(level2?.getAttribute("aria-pressed")).toBe("false");
+  });
+});
+
+describe("enlarged viewport", () => {
+  it("is bigger than the original 960x360, with the same aspect ratio so nothing stretches", () => {
+    expect(VIEWPORT_WIDTH).toBeGreaterThan(960);
+    expect(VIEWPORT_HEIGHT).toBeGreaterThan(360);
+    expect(VIEWPORT_WIDTH / VIEWPORT_HEIGHT).toBeCloseTo(960 / 360, 5);
+  });
+
+  it("still lets the camera reach both ends of each level, and no further", () => {
+    expect(cameraX(0, levelWidth(1))).toBe(0);
+    expect(cameraX(LEVEL1_WIDTH, levelWidth(1))).toBe(LEVEL1_WIDTH - VIEWPORT_WIDTH);
+    expect(cameraX(0, levelWidth(2))).toBe(0);
+    expect(cameraX(LEVEL2_WIDTH, levelWidth(2))).toBe(LEVEL2_WIDTH - VIEWPORT_WIDTH);
   });
 });
 
@@ -275,6 +331,156 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("dead");
   });
 
+  it("places a visible pit between the hidden block trap and the spike hazard", () => {
+    expect(LEVEL2_PIT.x).toBeGreaterThan(LEVEL2_HIDDEN_BLOCK.x + LEVEL2_HIDDEN_BLOCK.w);
+    expect(LEVEL2_PIT.x + LEVEL2_PIT.w).toBeLessThan(LEVEL2_SPIKE_TRIGGER.x);
+
+    // It's a real gap in the ground, not a decoration: no ground segment
+    // covers this stretch.
+    const covering = LEVEL2_GROUND_SEGMENTS.find(
+      (seg) => seg.y === GROUND_Y && seg.x <= LEVEL2_PIT.x && seg.x + seg.w >= LEVEL2_PIT.x + LEVEL2_PIT.w,
+    );
+    expect(covering, "the pit should be an actual gap, not covered by any ground segment").toBeUndefined();
+  });
+
+  it("kills the player who falls into the pit, same as any other fall", () => {
+    let state = createInitialState(2);
+    state.player = { ...state.player, x: LEVEL2_PIT.x + 20, y: GROUND_Y - PLAYER_H, vy: 0, onGround: false };
+    // Parked in the "wait high" part of the cycle, well clear of the gap, so
+    // there's nothing to catch the fall.
+    state.traps.pitBlocker = {
+      triggered: true,
+      timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD + PIT_BLOCKER_ASCEND_TIME,
+    };
+
+    let frames = 0;
+    const maxFrames = 90;
+    while (state.phase === "playing" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("dead");
+  });
+
+  it("blocks a normal jump attempt launched from the pit's edge, dropping the player in", () => {
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_PIT.x - PLAYER_W, // right edge exactly at the pit — the obvious place to jump from
+      y: GROUND_Y - PLAYER_H,
+      vx: 0,
+      vy: 0,
+      onGround: true,
+      facing: 1,
+    };
+    // Parked high for the whole attempt — well outside the brief bridge window.
+    state.traps.pitBlocker = {
+      triggered: true,
+      timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD + PIT_BLOCKER_ASCEND_TIME,
+    };
+
+    const rightJump: Input = { left: false, right: true, jumpPressed: true };
+    const right: Input = { left: false, right: true, jumpPressed: false };
+
+    state = step(state, rightJump, 1 / 60);
+    let frames = 1;
+    const maxFrames = 90;
+    let bonked = false;
+    while (state.phase === "playing" && frames < maxFrames) {
+      // The head-bonk signature: airborne, vertical velocity zeroed early
+      // (rather than reaching the apex naturally), still above ground level.
+      if (!state.player.onGround && state.player.vy === 0 && state.player.y < GROUND_Y - PLAYER_H) bonked = true;
+      state = step(state, right, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("dead");
+    expect(bonked).toBe(true); // confirms the platform actually interrupted the jump, not just a whiff
+  });
+
+  it("moves the overhead platform vertically instead of holding still", () => {
+    const high = pitBlockerRect({ triggered: true, timer: 0 });
+    const midDescend = pitBlockerRect({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME / 2 });
+    const low = pitBlockerRect({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD / 2 });
+
+    expect(high.y).toBe(LEVEL2_PIT_BLOCKER_HIGH_Y);
+    expect(low.y).toBe(LEVEL2_PIT_BLOCKER_LOW_Y);
+    expect(midDescend.y).toBeGreaterThan(high.y);
+    expect(midDescend.y).toBeLessThan(low.y);
+
+    // It cycles forever — sampling well into a later lap lands on the same
+    // point in the cycle.
+    const lateLapHigh = pitBlockerRect({ triggered: true, timer: PIT_BLOCKER_PERIOD * 3 });
+    expect(lateLapHigh.y).toBe(LEVEL2_PIT_BLOCKER_HIGH_Y);
+  });
+
+  it("briefly bridges the pit — flush with the ground, spanning the whole gap — once per cycle", () => {
+    expect(pitBridged({ triggered: true, timer: 0 })).toBe(false);
+    expect(pitBridged({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME - 0.01 })).toBe(false);
+    expect(pitBridged({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME })).toBe(true);
+    expect(pitBridged({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD / 2 })).toBe(true);
+    expect(pitBridged({ triggered: true, timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD })).toBe(false);
+    expect(
+      pitBridged({
+        triggered: true,
+        timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD + PIT_BLOCKER_ASCEND_TIME + PIT_BLOCKER_WAIT_HIGH - 0.01,
+      }),
+    ).toBe(false);
+
+    const bridgeRect = pitBlockerRect({
+      triggered: true,
+      timer: PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD / 2,
+    });
+    expect(bridgeRect.y).toBe(LEVEL2_PIT_BLOCKER_LOW_Y);
+    expect(bridgeRect.x).toBeLessThanOrEqual(LEVEL2_PIT.x);
+    expect(bridgeRect.x + bridgeRect.w).toBeGreaterThanOrEqual(LEVEL2_PIT.x + LEVEL2_PIT.w);
+  });
+
+  it("lets the player cross the pit on foot during the brief bridge window", () => {
+    let state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_PIT.x - 30,
+      y: GROUND_Y - PLAYER_H,
+      vx: 0,
+      vy: 0,
+      onGround: true,
+      facing: 1,
+    };
+    // Comfortably inside the hold window for the whole crossing.
+    state.traps.pitBlocker = { triggered: true, timer: PIT_BLOCKER_DESCEND_TIME + 0.05 };
+
+    const right: Input = { left: false, right: true, jumpPressed: false };
+    let frames = 0;
+    const maxFrames = 60;
+    while (state.phase === "playing" && state.player.x + PLAYER_W < LEVEL2_PIT.x + LEVEL2_PIT.w && frames < maxFrames) {
+      state = step(state, right, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("playing");
+    expect(state.player.x + PLAYER_W).toBeGreaterThanOrEqual(LEVEL2_PIT.x + LEVEL2_PIT.w);
+  });
+
+  it("resets the pit blocker's cycle, along with every other trap, on death and respawn", () => {
+    let state = createInitialState(2);
+    state.traps.pitBlocker = { triggered: true, timer: 1.7 };
+    state.player = { ...state.player, x: 400, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+
+    const maxFrames = Math.ceil(RESPAWN_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (state.phase === "dead" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("playing");
+    expect(state.traps.pitBlocker).toEqual({ triggered: false, timer: 0 });
+  });
+
   it("leaves the fake door untriggered while the player is still short of its trigger zone", () => {
     const state = createInitialState(2);
     state.player = {
@@ -400,6 +606,7 @@ describe("play can be lost", () => {
       fakeDoor: { triggered: true, timer: 0 },
       platform: { triggered: true, timer: 0 },
       chasmPlatform: { triggered: false, timer: 0 },
+      pitBlocker: { triggered: false, timer: 0 },
     });
 
     for (const rects of [untouched, midCollapse]) {
@@ -417,6 +624,7 @@ describe("play can be lost", () => {
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
+      pitBlocker: { triggered: false, timer: 0 },
     };
     const chasmPlatformStates = [
       { triggered: false, timer: 0 }, // before activation

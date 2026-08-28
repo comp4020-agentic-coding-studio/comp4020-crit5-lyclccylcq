@@ -14,8 +14,10 @@ export const GROUND_Y = 300;
 // platform on the way down — a death, not a landing.
 export const DEATH_Y = GROUND_Y + 220;
 
-export const VIEWPORT_WIDTH = 960;
-export const VIEWPORT_HEIGHT = 360;
+// Scaled up 4:3 from the original 960x360 — same 8:3 aspect ratio preserved,
+// so the view is bigger without stretching anything.
+export const VIEWPORT_WIDTH = 1280;
+export const VIEWPORT_HEIGHT = 480;
 
 // A collapsing tile gives way this long after the player lands on it — short
 // enough that simply sprinting across the trigger and the tile isn't a
@@ -43,6 +45,18 @@ export const MOVING_PLATFORM_SHIFT_DELAY = 0.5;
 export const MOVING_PLATFORM_SHIFT_DISTANCE = 260;
 // How long the smooth glide back to its original spot takes.
 export const MOVING_PLATFORM_RETURN_DURATION = 0.35;
+
+// The pit blocker: unlike every other Level 2 trap, this one never arms off a
+// trigger — it cycles forever from the moment the level starts, so there's no
+// approach that avoids it. High, it hangs low enough over the pit to knock a
+// full jump short; briefly, it drops flush with the ground to bridge the pit
+// instead. Time from HIGH to bridging and back to HIGH:
+export const PIT_BLOCKER_DESCEND_TIME = 0.8;
+export const PIT_BLOCKER_BRIDGE_HOLD = 0.6;
+export const PIT_BLOCKER_ASCEND_TIME = 0.8;
+export const PIT_BLOCKER_WAIT_HIGH = 1.8;
+export const PIT_BLOCKER_PERIOD =
+  PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD + PIT_BLOCKER_ASCEND_TIME + PIT_BLOCKER_WAIT_HIGH;
 
 export type Phase = "playing" | "dead" | "entering" | "won";
 export type Level = 1 | 2;
@@ -82,6 +96,7 @@ export interface Traps {
   fakeDoor: TrapRuntime;
   platform: TrapRuntime;
   chasmPlatform: TrapRuntime;
+  pitBlocker: TrapRuntime;
 }
 
 // Shared footprint for every door in the game — Level 1's honest exit, and
@@ -136,7 +151,8 @@ export const LEVEL2_SPAWN = { x: 60, y: GROUND_Y - PLAYER_H };
 export const LEVEL2_GROUND_SEGMENTS: Rect[] = [
   { x: 0, y: GROUND_Y, w: 380, h: 400 },
   { x: 450, y: GROUND_Y, w: 190, h: 400 },
-  { x: 710, y: GROUND_Y, w: 670, h: 400 },
+  { x: 710, y: GROUND_Y, w: 440, h: 400 }, // gap 1150-1220 is the visible pit, see LEVEL2_PIT
+  { x: 1220, y: GROUND_Y, w: 160, h: 400 },
   { x: 1380, y: GROUND_Y, w: 770, h: 400 }, // carries the staircase and the real door
   { x: 2570, y: GROUND_Y, w: 230, h: 400 }, // carries both doors; 2150-2570 is the chasm
 ];
@@ -185,6 +201,29 @@ export const LEVEL2_COLLAPSE_TRIGGER: Rect = {
 export const LEVEL2_HIDDEN_BLOCK_TRIGGER: Rect = { x: 1010, y: 0, w: 60, h: GROUND_Y };
 export const LEVEL2_HIDDEN_BLOCK: Rect = { x: 1010, y: GROUND_Y - 110, w: 60, h: 20 };
 
+// A ground gap that looks exactly like any other jump — the ground segments
+// above simply leave this stretch open. What makes it a trick is what hangs
+// above it: see LEVEL2_PIT_BLOCKER below.
+export const LEVEL2_PIT: Rect = { x: 1150, y: GROUND_Y, w: 70, h: 400 };
+
+// An ordinary-looking platform hanging above the pit, at a height a full jump
+// would clear on an empty stretch of ground — except here it's positioned to
+// clip a jump launched from the pit's edge, well before the far side, so the
+// jump comes up short over open air. It never looks different depending on
+// where it is in its cycle — the same plain platform look throughout, no
+// warning colour and no signal of what it's about to do.
+export const LEVEL2_PIT_BLOCKER_W = 90;
+export const LEVEL2_PIT_BLOCKER_H = 20;
+export const LEVEL2_PIT_BLOCKER_X = LEVEL2_PIT.x - 10; // overlaps 10px of solid ground each side, so it bridges with no seam
+// Bottom edge sits just 28px above a standing player's head — too tight to
+// walk under while jumping, but clear for ordinary standing/walking. Set this
+// low (rather than up near a jump's apex) on purpose: a jump launched from
+// the pit's edge clips it almost immediately, well before the far side, so
+// the leftover hang time after the bonk isn't enough to carry the player
+// past the gap — it drops them short, into the pit.
+export const LEVEL2_PIT_BLOCKER_HIGH_Y = GROUND_Y - 80;
+export const LEVEL2_PIT_BLOCKER_LOW_Y = GROUND_Y; // flush with the ground either side — a true bridge, not a step
+
 export const LEVEL2_SPIKE_TRIGGER: Rect = { x: 1280, y: 0, w: 40, h: GROUND_Y };
 export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 80, h: 18 };
 
@@ -221,6 +260,7 @@ export function createInitialState(level: Level = 1, opts?: { announce?: boolean
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
       chasmPlatform: { triggered: false, timer: 0 },
+      pitBlocker: { triggered: false, timer: 0 },
     },
     phaseTime: 0,
     banner: announce ? { timer: 0 } : null,
@@ -271,6 +311,38 @@ export function chasmPlatformRect(trap: TrapRuntime): Rect {
   return { ...LEVEL2_CHASM_2, x: LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE * (1 - t) };
 }
 
+// The pit blocker's current height: unlike chasmPlatformRect, this cycles
+// forever on trap.timer — there's no one-time trigger to wait on, so its
+// timer starts advancing the moment Level 2 does (see stepLevel2).
+export function pitBlockerRect(trap: TrapRuntime): Rect {
+  const t = trap.timer % PIT_BLOCKER_PERIOD;
+  const holdStart = PIT_BLOCKER_DESCEND_TIME;
+  const holdEnd = holdStart + PIT_BLOCKER_BRIDGE_HOLD;
+  const ascendEnd = holdEnd + PIT_BLOCKER_ASCEND_TIME;
+
+  let y: number;
+  if (t < holdStart) {
+    y =
+      LEVEL2_PIT_BLOCKER_HIGH_Y +
+      (LEVEL2_PIT_BLOCKER_LOW_Y - LEVEL2_PIT_BLOCKER_HIGH_Y) * (t / PIT_BLOCKER_DESCEND_TIME);
+  } else if (t < holdEnd) {
+    y = LEVEL2_PIT_BLOCKER_LOW_Y;
+  } else if (t < ascendEnd) {
+    y =
+      LEVEL2_PIT_BLOCKER_LOW_Y +
+      (LEVEL2_PIT_BLOCKER_HIGH_Y - LEVEL2_PIT_BLOCKER_LOW_Y) * ((t - holdEnd) / PIT_BLOCKER_ASCEND_TIME);
+  } else {
+    y = LEVEL2_PIT_BLOCKER_HIGH_Y;
+  }
+  return { x: LEVEL2_PIT_BLOCKER_X, y, w: LEVEL2_PIT_BLOCKER_W, h: LEVEL2_PIT_BLOCKER_H };
+}
+
+/** True only during the brief window the pit blocker is flush with the ground, fully bridging the pit. */
+export function pitBridged(trap: TrapRuntime): boolean {
+  const t = trap.timer % PIT_BLOCKER_PERIOD;
+  return t >= PIT_BLOCKER_DESCEND_TIME && t < PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD;
+}
+
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
 export function solidRects(traps: Traps): Rect[] {
   const rects = [
@@ -279,6 +351,7 @@ export function solidRects(traps: Traps): Rect[] {
     LEVEL2_STEP_2,
     LEVEL2_CHASM_1,
     chasmPlatformRect(traps.chasmPlatform),
+    pitBlockerRect(traps.pitBlocker),
   ];
   if (!isGone(traps.collapse)) rects.push(LEVEL2_COLLAPSE_TILE, { ...LEVEL2_COLLAPSE_TILE, h: 400 });
   if (!isGone(traps.platform, PLATFORM_BREAK_DELAY)) rects.push(LEVEL2_STEP_3);
@@ -376,6 +449,7 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
     fakeDoor: { ...state.traps.fakeDoor },
     platform: { ...state.traps.platform },
     chasmPlatform: { ...state.traps.chasmPlatform },
+    pitBlocker: { ...state.traps.pitBlocker },
   };
 
   // Trigger checks use the position the player entered this frame with, so a
@@ -406,6 +480,9 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   if (traps.spikes.triggered) traps.spikes.timer += dt;
   if (traps.collapse.triggered) traps.collapse.timer += dt;
   if (traps.chasmPlatform.triggered) traps.chasmPlatform.timer += dt;
+  // Cycles forever from the moment the level starts — no proximity trigger,
+  // no arming: there's no approach to this trap that avoids it running.
+  traps.pitBlocker = { triggered: true, timer: traps.pitBlocker.timer + dt };
 
   const player = integratePlayer(state.player, input, dt, solidRects(traps), LEVEL2_WIDTH);
 

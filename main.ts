@@ -8,6 +8,7 @@ import {
 } from "./game/engine.ts";
 import type { GameState, Input, Level } from "./game/engine.ts";
 import { render } from "./game/render.ts";
+import { setActiveLevel, wireLevelSelect } from "./game/levelSelect.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game");
 if (!canvas) throw new Error("missing #game canvas");
@@ -51,6 +52,15 @@ function restartTo(level: Level): void {
 }
 
 document.body.dataset.gameState = state.phase;
+
+const levelSelect = document.querySelector<HTMLElement>("#level-select");
+if (levelSelect) {
+  setActiveLevel(levelSelect, state.level);
+  wireLevelSelect(levelSelect, (level) => {
+    restartTo(level);
+    setActiveLevel(levelSelect, level);
+  });
+}
 
 let last = performance.now();
 function frame(now: number): void {

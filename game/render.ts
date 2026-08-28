@@ -27,6 +27,7 @@ import {
   isGone,
   spikesUp,
   chasmPlatformRect,
+  pitBlockerRect,
 } from "./engine.ts";
 import type { GameState, Rect } from "./engine.ts";
 
@@ -161,6 +162,10 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
   // puts it — ordinary and stationary either way, until it's ever moved.
   floatingPlatform(ctx, LEVEL2_CHASM_1, false);
   floatingPlatform(ctx, chasmPlatformRect(state.traps.chasmPlatform), false);
+
+  // The pit blocker: the same plain floating-platform look no matter where it
+  // is in its cycle — it never signals whether it's about to block or bridge.
+  floatingPlatform(ctx, pitBlockerRect(state.traps.pitBlocker), false);
 }
 
 function drawHiddenBlock(ctx: CanvasRenderingContext2D, state: GameState): void {
