@@ -14,16 +14,20 @@ export const GROUND_Y = 300;
 // platform on the way down — a death, not a landing.
 export const DEATH_Y = GROUND_Y + 220;
 
-// Scaled up 4:3 from the original 960x360 — same 8:3 aspect ratio preserved,
-// so the view is bigger without stretching anything.
+// Width matches the previous enlarged viewport exactly — this pass only
+// grows the view downward, giving more visible space below the ground/fall
+// line, without stretching or resizing anything horizontally.
 export const VIEWPORT_WIDTH = 1280;
-export const VIEWPORT_HEIGHT = 480;
+export const VIEWPORT_HEIGHT = 720;
 
 // A collapsing tile gives way this long after the player lands on it — short
 // enough that simply sprinting across the trigger and the tile isn't a
 // reliable escape (crossing both takes ~0.34s at full move speed).
 export const COLLAPSE_DELAY = 0.15;
-// Popup spikes rise this long after the player enters their trigger zone.
+// The stone wall trap reaches full height this long after the player enters
+// its trigger zone (see drawStoneWall in render.ts) — but contact is lethal
+// from the moment it's triggered, not only once fully risen (see stepLevel2),
+// so this only governs how the rise looks, not when it becomes dangerous.
 export const SPIKE_DELAY = 0.45;
 // A breakable platform gives way this long after the player lands on it.
 export const PLATFORM_BREAK_DELAY = 0.25;
@@ -46,17 +50,20 @@ export const MOVING_PLATFORM_SHIFT_DISTANCE = 260;
 // How long the smooth glide back to its original spot takes.
 export const MOVING_PLATFORM_RETURN_DURATION = 0.35;
 
-// The pit blocker: unlike every other Level 2 trap, this one never arms off a
-// trigger — it cycles forever from the moment the level starts, so there's no
-// approach that avoids it. High, it hangs low enough over the pit to knock a
-// full jump short; briefly, it drops flush with the ground to bridge the pit
-// instead. Time from HIGH to bridging and back to HIGH:
-export const PIT_BLOCKER_DESCEND_TIME = 0.8;
-export const PIT_BLOCKER_BRIDGE_HOLD = 0.6;
-export const PIT_BLOCKER_ASCEND_TIME = 0.8;
-export const PIT_BLOCKER_WAIT_HIGH = 1.8;
-export const PIT_BLOCKER_PERIOD =
-  PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD + PIT_BLOCKER_ASCEND_TIME + PIT_BLOCKER_WAIT_HIGH;
+// The pit cloud: an ordinary-looking decorative cloud sitting in the sky
+// above the pit, until the player actually attempts the jump over it —
+// nothing marks it as anything but scenery before that, and it never blocks
+// movement like a platform, before or after. Triggering it sends it falling
+// straight down through the jump's path and on past the bottom of the
+// screen, rather than settling in the gap it's guarding. It briefly holds
+// still after being triggered — imperceptible on its own, but enough that a
+// jump launched with reasonable lead (not the last possible instant) is
+// already carrying the player clear of its path before it actually starts
+// to move — before it actually starts falling.
+export const PIT_CLOUD_TELEGRAPH_DELAY = 0.18;
+// Time to fall from its sky height down to fully off-screen, once the
+// telegraph delay above has elapsed.
+export const PIT_CLOUD_FALL_DURATION = 0.5;
 
 export type Phase = "playing" | "dead" | "entering" | "won";
 export type Level = 1 | 2;
@@ -91,12 +98,11 @@ export interface Player {
 
 export interface Traps {
   collapse: TrapRuntime;
-  hiddenBlock: TrapRuntime;
   spikes: TrapRuntime;
   fakeDoor: TrapRuntime;
   platform: TrapRuntime;
   chasmPlatform: TrapRuntime;
-  pitBlocker: TrapRuntime;
+  pitCloud: TrapRuntime;
 }
 
 // Shared footprint for every door in the game — Level 1's honest exit, and
@@ -198,48 +204,69 @@ export const LEVEL2_COLLAPSE_TRIGGER: Rect = {
   h: GROUND_Y,
 };
 
-export const LEVEL2_HIDDEN_BLOCK_TRIGGER: Rect = { x: 1010, y: 0, w: 60, h: GROUND_Y };
-export const LEVEL2_HIDDEN_BLOCK: Rect = { x: 1010, y: GROUND_Y - 110, w: 60, h: 20 };
-
 // A ground gap that looks exactly like any other jump — the ground segments
-// above simply leave this stretch open. What makes it a trick is what hangs
-// above it: see LEVEL2_PIT_BLOCKER below.
+// above simply leave this stretch open, and there is nothing hanging above
+// it to see except an ordinary decorative cloud. What makes it a trick is
+// what that cloud does: see LEVEL2_PIT_CLOUD and LEVEL2_PIT_CLOUD_TRIGGER
+// below.
 export const LEVEL2_PIT: Rect = { x: 1150, y: GROUND_Y, w: 70, h: 400 };
 
-// An ordinary-looking platform hanging above the pit, at a height a full jump
-// would clear on an empty stretch of ground — except here it's positioned to
-// clip a jump launched from the pit's edge, well before the far side, so the
-// jump comes up short over open air. It never looks different depending on
-// where it is in its cycle — the same plain platform look throughout, no
-// warning colour and no signal of what it's about to do.
-export const LEVEL2_PIT_BLOCKER_W = 90;
-export const LEVEL2_PIT_BLOCKER_H = 20;
-export const LEVEL2_PIT_BLOCKER_X = LEVEL2_PIT.x - 10; // overlaps 10px of solid ground each side, so it bridges with no seam
-// Bottom edge sits just 28px above a standing player's head — too tight to
-// walk under while jumping, but clear for ordinary standing/walking. Set this
-// low (rather than up near a jump's apex) on purpose: a jump launched from
-// the pit's edge clips it almost immediately, well before the far side, so
-// the leftover hang time after the bonk isn't enough to carry the player
-// past the gap — it drops them short, into the pit.
-export const LEVEL2_PIT_BLOCKER_HIGH_Y = GROUND_Y - 80;
-export const LEVEL2_PIT_BLOCKER_LOW_Y = GROUND_Y; // flush with the ground either side — a true bridge, not a step
+// The cloud's footprint. Deliberately never appears in solidRects, triggered
+// or not — it's a hazard the player can be hit by, never a surface they can
+// stand on, and it never sits still in the gap once it has fallen.
+export const LEVEL2_PIT_CLOUD_W = 80;
+export const LEVEL2_PIT_CLOUD_H = 40;
+export const LEVEL2_PIT_CLOUD_X = LEVEL2_PIT.x + LEVEL2_PIT.w / 2 - LEVEL2_PIT_CLOUD_W / 2;
+// Where it sits before anything happens — up at the same kind of height as
+// the purely decorative background clouds, so it reads as scenery, not a
+// trap. Where it ends up once it has fallen: fully below the bottom edge of
+// the viewport, so it passes out of the visible screen instead of stopping
+// in the gap it was guarding.
+export const LEVEL2_PIT_CLOUD_SKY_Y = 90;
+export const LEVEL2_PIT_CLOUD_LOW_Y = VIEWPORT_HEIGHT + LEVEL2_PIT_CLOUD_H;
 
-export const LEVEL2_SPIKE_TRIGGER: Rect = { x: 1280, y: 0, w: 40, h: GROUND_Y };
-export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 80, h: 18 };
-
-// The apparent exit: looks and behaves exactly like Level 1's honest door
-// until the player gets close, at which point it slams shut and becomes a
-// solid wall — the real exit appears elsewhere at that same moment.
-export const LEVEL2_FAKE_DOOR: Rect = { x: 2680, y: GROUND_Y - DOOR_H, w: DOOR_W, h: DOOR_H };
-export const LEVEL2_FAKE_DOOR_TRIGGER: Rect = {
-  x: LEVEL2_FAKE_DOOR.x - 110,
+// Tight to the pit's own span, not a long lead-in: a small margin either side
+// of the gap so a jump launched right at the near edge, or still airborne
+// just past the far edge, both still count — but merely approaching from a
+// distance does not. Combined with the vy < 0 (an actual rising jump, not
+// walking) gate below, this is "jump input plus position near the pit's
+// edge/span", not a broad proximity zone.
+const LEVEL2_PIT_CLOUD_TRIGGER_MARGIN = 30;
+export const LEVEL2_PIT_CLOUD_TRIGGER: Rect = {
+  x: LEVEL2_PIT.x - LEVEL2_PIT_CLOUD_TRIGGER_MARGIN,
   y: 0,
-  w: 110,
+  w: LEVEL2_PIT_CLOUD_TRIGGER_MARGIN * 2 + LEVEL2_PIT.w,
   h: GROUND_Y,
 };
-// Placed at the opposite end of this final stretch of ground, not further
-// back — every earlier Level 2 trap stays permanently live once triggered,
-// so a full-level backtrack risks being unwinnable on the same life.
+
+export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 80, h: 18 };
+// Starts right up against the zone itself, contiguous with it — the same
+// "immediately before, no early warning" shape as LEVEL2_COLLAPSE_TRIGGER.
+// Narrow and late on purpose: by the time SPIKE_DELAY has elapsed, a player
+// who was already moving is well into the zone, not still watching the
+// spikes rise from a safe distance down the approach.
+export const LEVEL2_SPIKE_TRIGGER: Rect = { x: LEVEL2_SPIKE_ZONE.x - 60, y: 0, w: 60, h: GROUND_Y };
+
+// The apparent exit: looks and behaves exactly like Level 1's honest door —
+// no early tell at any distance — right up until the player actually reaches
+// it, at which point touching it is lethal, the same as a spike.
+export const LEVEL2_FAKE_DOOR: Rect = { x: 2680, y: GROUND_Y - DOOR_H, w: DOOR_W, h: DOOR_H };
+// Tight to the fake door itself, the same "no early warning" shape as every
+// other Level 2 trigger — reaching this close is what baits it into
+// revealing its true form (and the real door along with it), well before the
+// player actually touches it.
+const LEVEL2_FAKE_DOOR_REVEAL_MARGIN = 50;
+export const LEVEL2_FAKE_DOOR_REVEAL_TRIGGER: Rect = {
+  x: LEVEL2_FAKE_DOOR.x - LEVEL2_FAKE_DOOR_REVEAL_MARGIN,
+  y: 0,
+  w: LEVEL2_FAKE_DOOR_REVEAL_MARGIN,
+  h: GROUND_Y,
+};
+// Placed well before the fake door, not further back — every earlier Level 2
+// trap stays permanently live once triggered, so a full-level backtrack risks
+// being unwinnable on the same life. Hidden until the fake door is baited into
+// revealing it — see LEVEL2_FAKE_DOOR_REVEAL_TRIGGER and drawDoors in
+// render.ts.
 export const LEVEL2_REAL_DOOR: Rect = { x: 2100, y: GROUND_Y - DOOR_H, w: DOOR_W, h: DOOR_H };
 
 export function levelWidth(level: Level): number {
@@ -255,12 +282,11 @@ export function createInitialState(level: Level = 1, opts?: { announce?: boolean
     player: { x: spawn.x, y: spawn.y, vx: 0, vy: 0, onGround: false, facing: 1 },
     traps: {
       collapse: { triggered: false, timer: 0 },
-      hiddenBlock: { triggered: false, timer: 0 },
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
       chasmPlatform: { triggered: false, timer: 0 },
-      pitBlocker: { triggered: false, timer: 0 },
+      pitCloud: { triggered: false, timer: 0 },
     },
     phaseTime: 0,
     banner: announce ? { timer: 0 } : null,
@@ -277,10 +303,6 @@ export function playerRect(p: Player): Rect {
 
 function isGone(trap: TrapRuntime, delay: number = COLLAPSE_DELAY): boolean {
   return trap.triggered && trap.timer >= delay;
-}
-
-function spikesUp(trap: TrapRuntime): boolean {
-  return trap.triggered && trap.timer >= SPIKE_DELAY;
 }
 
 // A landing check, not an overlap check: resolveMovement snaps a resting
@@ -311,36 +333,16 @@ export function chasmPlatformRect(trap: TrapRuntime): Rect {
   return { ...LEVEL2_CHASM_2, x: LEVEL2_CHASM_2.x + MOVING_PLATFORM_SHIFT_DISTANCE * (1 - t) };
 }
 
-// The pit blocker's current height: unlike chasmPlatformRect, this cycles
-// forever on trap.timer — there's no one-time trigger to wait on, so its
-// timer starts advancing the moment Level 2 does (see stepLevel2).
-export function pitBlockerRect(trap: TrapRuntime): Rect {
-  const t = trap.timer % PIT_BLOCKER_PERIOD;
-  const holdStart = PIT_BLOCKER_DESCEND_TIME;
-  const holdEnd = holdStart + PIT_BLOCKER_BRIDGE_HOLD;
-  const ascendEnd = holdEnd + PIT_BLOCKER_ASCEND_TIME;
-
-  let y: number;
-  if (t < holdStart) {
-    y =
-      LEVEL2_PIT_BLOCKER_HIGH_Y +
-      (LEVEL2_PIT_BLOCKER_LOW_Y - LEVEL2_PIT_BLOCKER_HIGH_Y) * (t / PIT_BLOCKER_DESCEND_TIME);
-  } else if (t < holdEnd) {
-    y = LEVEL2_PIT_BLOCKER_LOW_Y;
-  } else if (t < ascendEnd) {
-    y =
-      LEVEL2_PIT_BLOCKER_LOW_Y +
-      (LEVEL2_PIT_BLOCKER_HIGH_Y - LEVEL2_PIT_BLOCKER_LOW_Y) * ((t - holdEnd) / PIT_BLOCKER_ASCEND_TIME);
-  } else {
-    y = LEVEL2_PIT_BLOCKER_HIGH_Y;
-  }
-  return { x: LEVEL2_PIT_BLOCKER_X, y, w: LEVEL2_PIT_BLOCKER_W, h: LEVEL2_PIT_BLOCKER_H };
-}
-
-/** True only during the brief window the pit blocker is flush with the ground, fully bridging the pit. */
-export function pitBridged(trap: TrapRuntime): boolean {
-  const t = trap.timer % PIT_BLOCKER_PERIOD;
-  return t >= PIT_BLOCKER_DESCEND_TIME && t < PIT_BLOCKER_DESCEND_TIME + PIT_BLOCKER_BRIDGE_HOLD;
+// The pit cloud's current position: sits at its decorative sky height until
+// triggered, holds there for PIT_CLOUD_TELEGRAPH_DELAY (a jump with
+// reasonable lead is already past by the time it starts moving), then falls
+// on past the bottom of the viewport over PIT_CLOUD_FALL_DURATION and stays
+// gone — never solid, so nothing else depends on where it ends up.
+export function pitCloudRect(trap: TrapRuntime): Rect {
+  const fallElapsed = trap.triggered ? Math.max(trap.timer - PIT_CLOUD_TELEGRAPH_DELAY, 0) : 0;
+  const t = Math.min(fallElapsed / PIT_CLOUD_FALL_DURATION, 1);
+  const y = LEVEL2_PIT_CLOUD_SKY_Y + (LEVEL2_PIT_CLOUD_LOW_Y - LEVEL2_PIT_CLOUD_SKY_Y) * t;
+  return { x: LEVEL2_PIT_CLOUD_X, y, w: LEVEL2_PIT_CLOUD_W, h: LEVEL2_PIT_CLOUD_H };
 }
 
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
@@ -351,11 +353,9 @@ export function solidRects(traps: Traps): Rect[] {
     LEVEL2_STEP_2,
     LEVEL2_CHASM_1,
     chasmPlatformRect(traps.chasmPlatform),
-    pitBlockerRect(traps.pitBlocker),
   ];
   if (!isGone(traps.collapse)) rects.push(LEVEL2_COLLAPSE_TILE, { ...LEVEL2_COLLAPSE_TILE, h: 400 });
   if (!isGone(traps.platform, PLATFORM_BREAK_DELAY)) rects.push(LEVEL2_STEP_3);
-  if (traps.hiddenBlock.triggered) rects.push(LEVEL2_HIDDEN_BLOCK);
   return rects;
 }
 
@@ -444,32 +444,21 @@ function stepLevel1(state: GameState, input: Input, dt: number): GameState {
 function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   const traps: Traps = {
     collapse: { ...state.traps.collapse },
-    hiddenBlock: { ...state.traps.hiddenBlock },
     spikes: { ...state.traps.spikes },
     fakeDoor: { ...state.traps.fakeDoor },
     platform: { ...state.traps.platform },
     chasmPlatform: { ...state.traps.chasmPlatform },
-    pitBlocker: { ...state.traps.pitBlocker },
+    pitCloud: { ...state.traps.pitCloud },
   };
 
   // Trigger checks use the position the player entered this frame with, so a
   // trap armed this frame is already in effect for this same frame — a block
   // mid-jump is already solid, a tile just reached is already giving way.
-  if (
-    !traps.hiddenBlock.triggered &&
-    state.player.vy < 0 &&
-    rectsOverlap(playerRect(state.player), LEVEL2_HIDDEN_BLOCK_TRIGGER)
-  ) {
-    traps.hiddenBlock = { triggered: true, timer: 0 };
-  }
   if (!traps.spikes.triggered && rectsOverlap(playerRect(state.player), LEVEL2_SPIKE_TRIGGER)) {
     traps.spikes = { triggered: true, timer: 0 };
   }
   if (!traps.collapse.triggered && rectsOverlap(playerRect(state.player), LEVEL2_COLLAPSE_TRIGGER)) {
     traps.collapse = { triggered: true, timer: 0 };
-  }
-  if (!traps.fakeDoor.triggered && rectsOverlap(playerRect(state.player), LEVEL2_FAKE_DOOR_TRIGGER)) {
-    traps.fakeDoor = { triggered: true, timer: 0 };
   }
   // Leaving CHASM_1 into the gap, not resting on it, is what counts as a
   // genuine attempt to reach the platform beyond — and it only ever fires
@@ -477,12 +466,31 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   if (!traps.chasmPlatform.triggered && rectsOverlap(playerRect(state.player), LEVEL2_CHASM_2_TRIGGER)) {
     traps.chasmPlatform = { triggered: true, timer: 0 };
   }
+  // A rising jump while actually near the pit's span sends the cloud falling
+  // — a genuine attempt at the jump, not just walking up to it or being
+  // nowhere near it yet. The cloud is never solid, so unlike the other
+  // triggers here this has no bearing on this same frame's movement — only
+  // on the hazard check below, once the player's new position is known.
+  if (
+    !traps.pitCloud.triggered &&
+    state.player.vy < 0 &&
+    rectsOverlap(playerRect(state.player), LEVEL2_PIT_CLOUD_TRIGGER)
+  ) {
+    traps.pitCloud = { triggered: true, timer: 0 };
+  }
+  // The fake door reveals itself (and the real door behind it) once the
+  // player gets close enough to bait it — well before actual contact. Its
+  // separate, unchanged contact check below still gates the kill.
+  if (
+    !traps.fakeDoor.triggered &&
+    rectsOverlap(playerRect(state.player), LEVEL2_FAKE_DOOR_REVEAL_TRIGGER)
+  ) {
+    traps.fakeDoor = { triggered: true, timer: 0 };
+  }
   if (traps.spikes.triggered) traps.spikes.timer += dt;
   if (traps.collapse.triggered) traps.collapse.timer += dt;
   if (traps.chasmPlatform.triggered) traps.chasmPlatform.timer += dt;
-  // Cycles forever from the moment the level starts — no proximity trigger,
-  // no arming: there's no approach to this trap that avoids it running.
-  traps.pitBlocker = { triggered: true, timer: traps.pitBlocker.timer + dt };
+  if (traps.pitCloud.triggered) traps.pitCloud.timer += dt;
 
   const player = integratePlayer(state.player, input, dt, solidRects(traps), LEVEL2_WIDTH);
 
@@ -494,18 +502,27 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   }
   if (traps.platform.triggered) traps.platform.timer += dt;
 
+  // The real door only ever appears once the fake door has been baited into
+  // revealing it (see LEVEL2_FAKE_DOOR_REVEAL_TRIGGER above and drawDoors in
+  // render.ts), so gating the win on that same flag really just means "the
+  // real door has to actually be visible first". Since revealing it is the
+  // safe proximity check above rather than the lethal contact check below,
+  // this can always be satisfied without dying.
   let phase: Phase = "playing";
-  // The real door only exists as a win condition once the fake one has
-  // sprung — otherwise the player would win by accident walking past it on
-  // the way to the fake door in the first place.
   if (traps.fakeDoor.triggered && rectsOverlap(playerRect(player), LEVEL2_REAL_DOOR)) {
     phase = "entering";
   } else if (player.y > DEATH_Y) {
     phase = "dead";
-  } else if (spikesUp(traps.spikes) && rectsOverlap(playerRect(player), LEVEL2_SPIKE_ZONE)) {
+  } else if (traps.spikes.triggered && rectsOverlap(playerRect(player), LEVEL2_SPIKE_ZONE)) {
+    // Lethal from the moment the stone wall starts rising, not only once
+    // it's fully up — colliding with it mid-rise is just as deadly.
     phase = "dead";
   } else if (traps.fakeDoor.triggered && rectsOverlap(playerRect(player), LEVEL2_FAKE_DOOR)) {
     // The fake door is never solid — like spikes, it's lethal on contact once armed.
+    phase = "dead";
+  } else if (traps.pitCloud.triggered && rectsOverlap(playerRect(player), pitCloudRect(traps.pitCloud))) {
+    // The falling cloud is never solid either — it kills on contact, the
+    // same as the fake door and spikes, rather than blocking the jump.
     phase = "dead";
   }
 
@@ -554,4 +571,4 @@ export function cameraX(playerX: number, width: number): number {
   return clamp(playerX - VIEWPORT_WIDTH / 2 + PLAYER_W / 2, 0, width - VIEWPORT_WIDTH);
 }
 
-export { isGone, spikesUp };
+export { isGone };

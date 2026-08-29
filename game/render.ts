@@ -7,7 +7,6 @@ import {
   LEVEL2_FAKE_DOOR,
   LEVEL2_REAL_DOOR,
   LEVEL2_GROUND_SEGMENTS,
-  LEVEL2_HIDDEN_BLOCK,
   LEVEL2_SPIKE_ZONE,
   LEVEL2_COLLAPSE_TILE,
   LEVEL2_STEP_1,
@@ -24,12 +23,14 @@ import {
   DOOR_ENTER_DELAY,
   DOOR_OPEN_DURATION,
   LEVEL_BANNER_DURATION,
+  SPIKE_DELAY,
   isGone,
-  spikesUp,
   chasmPlatformRect,
-  pitBlockerRect,
+  pitCloudRect,
+  LEVEL2_PIT_CLOUD_W,
+  LEVEL2_PIT_CLOUD_H,
 } from "./engine.ts";
-import type { GameState, Rect } from "./engine.ts";
+import type { GameState, Rect, TrapRuntime } from "./engine.ts";
 
 const SKY_TOP = "#bdeaff";
 const SKY_BOTTOM = "#e9f9ff";
@@ -38,12 +39,37 @@ const GROUND_BODY = "#8a5a3c";
 const CRACK_TOP = "#b7d98a";
 const PLAYER_BODY = "#ff8a3d";
 const PLAYER_EYE = "#20303a";
-const SPIKE_COLOR = "#e8453c";
+export const SPIKE_COLOR = "#e8453c";
+const STONE_WALL_COLOR = "#8d8d8d";
+const STONE_WALL_LINE = "#5a5a5a";
 const DOOR_FRAME = "#4a3826";
 const DOOR_PANEL = "#3fae5a";
 const DOOR_KNOB = "#f4e4b8";
 const WALL_BLOCKED = "#6b5a4a";
 const WALL_PLANK = "#4a3826";
+
+// Visual-only rise height — taller than the trap's actual (much shorter)
+// collision zone, same as every ground slab already being drawn taller than
+// its own thin hitbox. Purely cosmetic: the trap's lethal footprint in
+// engine.ts never changes.
+const STONE_WALL_HEIGHT = 90;
+
+// Ground/step rects are collision columns, not visual ones — they're this
+// tall so nothing can ever tunnel through the bottom of the viewport, no
+// matter how the viewport height changes. Capping the actual fill at this
+// height keeps the visible slab of dirt the same modest thickness it always
+// was; drawing the full collision height instead would make every ground
+// block look like it grew taller every time the viewport did.
+export const GROUND_VISUAL_H = 180;
+
+// The world (ground, doors, hazards, player — everything drawn under the
+// camera transform below) is shifted down by this many pixels within the
+// same fixed VIEWPORT_HEIGHT canvas. GROUND_Y and every collision rect in
+// engine.ts stay exactly where they are; this only moves where that geometry
+// paints on screen, so the ground sits closer to the bottom of the frame
+// instead of floating in the upper half of the taller viewport, without
+// stretching any terrain block to get there.
+export const WORLD_Y_OFFSET = 150;
 
 const clouds = [
   { x: 120, y: 60, r: 22 },
@@ -64,11 +90,11 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState, camera: 
   ctx.fillRect(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
 
   ctx.save();
-  ctx.translate(-camera, 0);
+  ctx.translate(-camera, WORLD_Y_OFFSET);
 
   drawClouds(ctx, camera);
   drawGround(ctx, state);
-  drawHiddenBlock(ctx, state);
+  if (state.level === 2) drawPitCloud(ctx, state);
   drawSpikeHazards(ctx, state);
   drawDoors(ctx, state);
   if (state.phase === "dead") drawShatter(ctx, state);
@@ -95,7 +121,8 @@ function drawClouds(ctx: CanvasRenderingContext2D, camera: number): void {
 }
 
 function groundSlab(ctx: CanvasRenderingContext2D, rect: Rect, cracked: boolean): void {
-  const { x, y, w, h } = rect;
+  const { x, y, w } = rect;
+  const h = Math.min(rect.h, GROUND_VISUAL_H);
   ctx.fillStyle = GROUND_BODY;
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = cracked ? CRACK_TOP : GROUND_TOP;
@@ -110,6 +137,19 @@ function groundSlab(ctx: CanvasRenderingContext2D, rect: Rect, cracked: boolean)
     ctx.lineTo(x + w * 0.55, y + 9);
     ctx.stroke();
   }
+}
+
+// Fills the same terrain column on down to the bottom of the viewport, purely
+// additive underneath groundSlab's capped visual thickness — closes the
+// stretch of empty sky that otherwise shows below every ground block, without
+// touching the capped slab draw itself or any collision geometry. A no-op
+// once the capped slab already reaches (or passes) the viewport's bottom.
+function groundFoundation(ctx: CanvasRenderingContext2D, rect: Rect): void {
+  const top = rect.y + GROUND_VISUAL_H;
+  const bottom = VIEWPORT_HEIGHT - WORLD_Y_OFFSET;
+  if (bottom <= top) return;
+  ctx.fillStyle = GROUND_BODY;
+  ctx.fillRect(rect.x, top, rect.w, bottom - top);
 }
 
 // A thin slab that visibly floats over open air, rather than sitting on a
@@ -134,10 +174,16 @@ function floatingPlatform(ctx: CanvasRenderingContext2D, rect: Rect, cracked: bo
 
 function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
   if (state.level === 1) {
-    for (const seg of LEVEL1_GROUND_SEGMENTS) groundSlab(ctx, seg, false);
+    for (const seg of LEVEL1_GROUND_SEGMENTS) {
+      groundSlab(ctx, seg, false);
+      groundFoundation(ctx, seg);
+    }
     return;
   }
-  for (const seg of LEVEL2_GROUND_SEGMENTS) groundSlab(ctx, seg, false);
+  for (const seg of LEVEL2_GROUND_SEGMENTS) {
+    groundSlab(ctx, seg, false);
+    groundFoundation(ctx, seg);
+  }
   if (!isGone(state.traps.collapse)) {
     // Always drawn as ordinary ground, armed or not — no crack ever shows
     // before the tile actually gives way, only the abrupt disappearance once
@@ -145,6 +191,7 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
     // tile's own thin collision-rect height), so no sliver of sky ever shows
     // beneath it before it collapses.
     groundSlab(ctx, { ...LEVEL2_COLLAPSE_TILE, h: 400 }, false);
+    groundFoundation(ctx, LEVEL2_COLLAPSE_TILE);
   }
 
   // The staircase: all three steps are permanently fixed in place, drawn as
@@ -163,23 +210,21 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
   floatingPlatform(ctx, LEVEL2_CHASM_1, false);
   floatingPlatform(ctx, chasmPlatformRect(state.traps.chasmPlatform), false);
 
-  // The pit blocker: the same plain floating-platform look no matter where it
-  // is in its cycle — it never signals whether it's about to block or bridge.
-  floatingPlatform(ctx, pitBlockerRect(state.traps.pitBlocker), false);
 }
 
-function drawHiddenBlock(ctx: CanvasRenderingContext2D, state: GameState): void {
-  if (state.level !== 2 || !state.traps.hiddenBlock.triggered) return; // invisible until it's been hit
-  ctx.fillStyle = "#c98a4b";
-  ctx.fillRect(LEVEL2_HIDDEN_BLOCK.x, LEVEL2_HIDDEN_BLOCK.y, LEVEL2_HIDDEN_BLOCK.w, LEVEL2_HIDDEN_BLOCK.h);
-  ctx.strokeStyle = "#8a5a2c";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(
-    LEVEL2_HIDDEN_BLOCK.x + 1,
-    LEVEL2_HIDDEN_BLOCK.y + 1,
-    LEVEL2_HIDDEN_BLOCK.w - 2,
-    LEVEL2_HIDDEN_BLOCK.h - 2,
-  );
+// Same puffy, layered-arc look as the purely decorative background clouds —
+// nothing marks this one as different until it starts falling.
+function drawPitCloud(ctx: CanvasRenderingContext2D, state: GameState): void {
+  const rect = pitCloudRect(state.traps.pitCloud);
+  const cx = rect.x + LEVEL2_PIT_CLOUD_W / 2;
+  const cy = rect.y + LEVEL2_PIT_CLOUD_H / 2;
+  const r = LEVEL2_PIT_CLOUD_H / 2;
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.arc(cx + r * 0.9, cy + r * 0.15, r * 0.75, 0, Math.PI * 2);
+  ctx.arc(cx - r * 0.9, cy + r * 0.2, r * 0.65, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function drawSpikeTriangles(ctx: CanvasRenderingContext2D, zone: Rect): void {
@@ -197,12 +242,34 @@ function drawSpikeTriangles(ctx: CanvasRenderingContext2D, zone: Rect): void {
   }
 }
 
+// A stone wall trap: rises quickly from the ground once triggered, taller
+// than its own (much shorter) hitbox for a suitably sudden, trap-like look —
+// purely cosmetic, the lethal footprint stays exactly LEVEL2_SPIKE_ZONE.
+function drawStoneWall(ctx: CanvasRenderingContext2D, zone: Rect, trap: TrapRuntime): void {
+  const h = STONE_WALL_HEIGHT * Math.min(trap.timer / SPIKE_DELAY, 1);
+  if (h <= 0) return;
+  const bottom = zone.y + zone.h;
+  const y = bottom - h;
+  ctx.fillStyle = STONE_WALL_COLOR;
+  ctx.fillRect(zone.x, y, zone.w, h);
+  ctx.strokeStyle = STONE_WALL_LINE;
+  ctx.lineWidth = 1.5;
+  const rows = 3;
+  for (let i = 1; i < rows; i++) {
+    const ly = y + (h * i) / rows;
+    ctx.beginPath();
+    ctx.moveTo(zone.x, ly);
+    ctx.lineTo(zone.x + zone.w, ly);
+    ctx.stroke();
+  }
+}
+
 function drawSpikeHazards(ctx: CanvasRenderingContext2D, state: GameState): void {
   if (state.level === 1) {
     drawSpikeTriangles(ctx, LEVEL1_SPIKE_HAZARD);
     return;
   }
-  if (spikesUp(state.traps.spikes)) drawSpikeTriangles(ctx, LEVEL2_SPIKE_ZONE);
+  if (state.traps.spikes.triggered) drawStoneWall(ctx, LEVEL2_SPIKE_ZONE, state.traps.spikes);
 }
 
 // A plain, recognisable open door — used for every honest exit, and for the
@@ -261,10 +328,13 @@ function drawDoors(ctx: CanvasRenderingContext2D, state: GameState): void {
     else drawDoor(ctx, LEVEL1_GOAL);
     return;
   }
+  // The real door stays hidden until the fake door has been baited into
+  // revealing it (see LEVEL2_FAKE_DOOR_REVEAL_TRIGGER in engine.ts) — only
+  // then does it appear at all, honest exit from that point on.
   if (state.traps.fakeDoor.triggered) {
-    drawBlockedDoor(ctx, LEVEL2_FAKE_DOOR);
     if (entering) drawDoorOpening(ctx, LEVEL2_REAL_DOOR, state.phaseTime);
     else drawDoor(ctx, LEVEL2_REAL_DOOR);
+    drawBlockedDoor(ctx, LEVEL2_FAKE_DOOR);
   } else {
     drawDoor(ctx, LEVEL2_FAKE_DOOR);
   }

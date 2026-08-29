@@ -85,12 +85,11 @@ describe("level select control", () => {
       player: { x: 2210, y: 40, vx: -320, vy: 150, onGround: false, facing: -1 },
       traps: {
         collapse: { triggered: true, timer: 0.3 },
-        hiddenBlock: { triggered: true, timer: 0 },
         spikes: { triggered: true, timer: 1 },
         fakeDoor: { triggered: true, timer: 0 },
         platform: { triggered: true, timer: 0.1 },
         chasmPlatform: { triggered: true, timer: 0.9 },
-        pitBlocker: { triggered: true, timer: 0.9 },
+        pitCloud: { triggered: true, timer: 0.9 },
       },
       banner: null,
     };
