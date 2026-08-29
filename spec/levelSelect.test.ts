@@ -116,4 +116,21 @@ describe("level select control", () => {
     expect(state.phaseTime).toBe(0);
     expect(state.banner).toEqual({ timer: 0 });
   });
+
+  it("still works from the final completion state, after both levels are cleared", () => {
+    const dom = new JSDOM("<!doctype html><body></body>");
+    const container = buildLevelSelect(dom);
+    let state: GameState = { ...createInitialState(2), phase: "complete", phaseTime: 0 };
+
+    wireLevelSelect(container, (level) => {
+      state = createInitialState(level);
+      setActiveLevel(container, level);
+    });
+    click(dom, buttonFor(container, 1));
+
+    expect(state.level).toBe(1);
+    expect(state.phase).toBe("playing");
+    expect(state.player.x).toBe(LEVEL1_SPAWN.x);
+    expect(buttonFor(container, 1).getAttribute("aria-pressed")).toBe("true");
+  });
 });

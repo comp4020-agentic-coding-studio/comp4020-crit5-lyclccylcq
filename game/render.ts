@@ -99,12 +99,13 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState, camera: 
   drawDoors(ctx, state);
   if (state.phase === "dead") drawShatter(ctx, state);
   else if (state.phase === "entering") drawEntering(ctx, state);
-  else drawPlayer(ctx, state);
+  else if (state.phase !== "complete") drawPlayer(ctx, state);
 
   ctx.restore();
 
   drawPhaseOverlay(ctx, state.phase);
   drawBanner(ctx, state);
+  drawCompleteScreen(ctx, state);
 }
 
 function drawClouds(ctx: CanvasRenderingContext2D, camera: number): void {
@@ -442,6 +443,27 @@ function drawBanner(ctx: CanvasRenderingContext2D, state: GameState): void {
   ctx.restore();
 }
 
+// The final "you're done" screen: there is no Level 3, so this is where the
+// game actually ends, once the Level 2 door-entry animation finishes. Text
+// only, no gameplay hints — the player's own restart (any key) or the
+// level-select control (still usable from here) are what bring the game back.
+function drawCompleteScreen(ctx: CanvasRenderingContext2D, state: GameState): void {
+  if (state.phase !== "complete") return;
+  ctx.save();
+  ctx.fillStyle = "rgba(20,30,40,0.85)";
+  ctx.font = "bold 34px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("You cleared Pip's Detour", VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 18);
+  ctx.font = "16px sans-serif";
+  ctx.fillText(
+    "Press any key, or pick a level above, to play again",
+    VIEWPORT_WIDTH / 2,
+    VIEWPORT_HEIGHT / 2 + 20,
+  );
+  ctx.restore();
+}
+
 function radiusedRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -463,7 +485,7 @@ function drawPhaseOverlay(ctx: CanvasRenderingContext2D, phase: GameState["phase
   if (phase === "dead") {
     ctx.fillStyle = "rgba(200,30,30,0.18)";
     ctx.fillRect(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
-  } else if (phase === "won") {
+  } else if (phase === "complete") {
     ctx.fillStyle = "rgba(255,210,63,0.18)";
     ctx.fillRect(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
   }

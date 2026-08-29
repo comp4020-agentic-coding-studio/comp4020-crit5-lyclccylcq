@@ -434,4 +434,29 @@ describe("requirements 3 & 4: death and door-entry replace the normal player dra
     const arcs = renderTo(state).arcCalls;
     expect(arcs.some((a) => a.radius === EYE_RADIUS)).toBe(false);
   });
+
+  it("does not draw the normal player once the game is complete", () => {
+    const state: GameState = { ...createInitialState(2), phase: "complete", phaseTime: 0 };
+    const arcs = renderTo(state).arcCalls;
+    expect(arcs.some((a) => a.radius === EYE_RADIUS)).toBe(false);
+  });
+});
+
+describe("final completion screen", () => {
+  it("renders the completion text once the game reaches the complete phase", () => {
+    const state: GameState = { ...createInitialState(2), phase: "complete", phaseTime: 0 };
+    const texts = renderTo(state).fillTextCalls.map((c) => c.text);
+    expect(texts).toContain("You cleared Pip's Detour");
+  });
+
+  it("shows no completion text while still playing, dead, or mid door-entry", () => {
+    const playing = renderTo(createInitialState(2)).fillTextCalls.map((c) => c.text);
+    expect(playing).not.toContain("You cleared Pip's Detour");
+
+    const dead: GameState = { ...createInitialState(2), phase: "dead", phaseTime: 0.1 };
+    expect(renderTo(dead).fillTextCalls.map((c) => c.text)).not.toContain("You cleared Pip's Detour");
+
+    const entering: GameState = { ...createInitialState(2), phase: "entering", phaseTime: 0.1 };
+    expect(renderTo(entering).fillTextCalls.map((c) => c.text)).not.toContain("You cleared Pip's Detour");
+  });
 });

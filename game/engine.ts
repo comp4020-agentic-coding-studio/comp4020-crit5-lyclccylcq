@@ -65,7 +65,7 @@ export const PIT_CLOUD_TELEGRAPH_DELAY = 0.18;
 // telegraph delay above has elapsed.
 export const PIT_CLOUD_FALL_DURATION = 0.5;
 
-export type Phase = "playing" | "dead" | "entering" | "won";
+export type Phase = "playing" | "dead" | "entering" | "complete";
 export type Level = 1 | 2;
 
 export interface Rect {
@@ -531,7 +531,9 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
 
 /**
  * Advance the simulation by one frame. Drives "dead"/"entering" itself so
- * their timing is plain, testable state — a no-op only once "won" is reached.
+ * their timing is plain, testable state — a no-op only once "complete" is
+ * reached (there is no Level 3 to advance into, so that phase is terminal
+ * until a manual restart/level-select).
  */
 export function step(state: GameState, input: Input, dt: number): GameState {
   if (state.phase === "dead") return tickDead(state, dt);
@@ -564,7 +566,9 @@ function tickDead(state: GameState, dt: number): GameState {
 function tickEntering(state: GameState, dt: number): GameState {
   const phaseTime = state.phaseTime + dt;
   if (phaseTime < DOOR_ENTER_DELAY) return { ...state, phaseTime };
-  return state.level === 1 ? createInitialState(2) : { ...state, phase: "won", phaseTime: 0 };
+  // Level 1's door leads on to Level 2; Level 2's door is the last one there
+  // is — there's no Level 3 to load, so this ends the game instead.
+  return state.level === 1 ? createInitialState(2) : { ...state, phase: "complete", phaseTime: 0 };
 }
 
 export function cameraX(playerX: number, width: number): number {

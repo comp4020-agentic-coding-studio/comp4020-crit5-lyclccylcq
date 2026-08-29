@@ -873,7 +873,7 @@ describe("play can be lost", () => {
     };
 
     let next = step(state, noInput, 1 / 60);
-    expect(next.phase).toBe("entering"); // not won yet — the entry animation is playing
+    expect(next.phase).toBe("entering"); // not complete yet — the entry animation is playing
 
     const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
     let frames = 0;
@@ -882,7 +882,40 @@ describe("play can be lost", () => {
       frames++;
     }
 
-    expect(next.phase).toBe("won");
+    expect(next.phase).toBe("complete");
+  });
+
+  it("stays on level 2 and never attempts to load a level 3 once the game is complete", () => {
+    const state = createInitialState(2);
+    state.traps.fakeDoor = { triggered: true, timer: 0 };
+    state.player = {
+      ...state.player,
+      x: LEVEL2_REAL_DOOR.x,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+
+    let next = step(state, noInput, 1 / 60);
+    const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (next.phase === "entering" && frames < maxFrames) {
+      next = step(next, noInput, 1 / 60);
+      frames++;
+    }
+    expect(next.phase).toBe("complete");
+    // Level is a 1 | 2 union — there is no level 3 value this could ever hold,
+    // and the "complete" phase is exactly what stands in for one.
+    expect(next.level).toBe(2);
+
+    // Further frames — even with movement/jump input held — must not advance
+    // gameplay any further: no level change, no phase change, no physics.
+    const held: Input = { left: true, right: false, jumpPressed: true };
+    for (let i = 0; i < 120; i++) {
+      next = step(next, held, 1 / 60);
+    }
+    expect(next.phase).toBe("complete");
+    expect(next.level).toBe(2);
+    expect(next.player.x).toBe(LEVEL2_REAL_DOOR.x);
   });
 
   it("does not open the real door for a player who has never baited the fake door into revealing it", () => {
@@ -1427,7 +1460,7 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("playing");
     run(left, 4);
     hop("left", 21); // back across the real door
-    expect(state.phase).toBe("entering"); // not won yet — the entry animation is playing
+    expect(state.phase).toBe("entering"); // not complete yet — the entry animation is playing
 
     const maxEnterFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
     let enterFrames = 0;
@@ -1436,6 +1469,6 @@ describe("play can be lost", () => {
       enterFrames++;
     }
 
-    expect(state.phase).toBe("won");
+    expect(state.phase).toBe("complete");
   });
 });

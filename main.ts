@@ -35,8 +35,8 @@ window.addEventListener("keydown", (event) => {
     if (state.phase === "playing") jumpQueued = true;
     event.preventDefault(); // stop the page from scrolling on spacebar
   }
-  if (state.phase === "won" && (held.left || held.right || JUMP_KEYS.has(key))) {
-    restartTo(1); // winning replays the whole game from Level 1
+  if (state.phase === "complete" && (held.left || held.right || JUMP_KEYS.has(key))) {
+    restartTo(1); // clearing the game replays it from Level 1
   }
 });
 
@@ -67,7 +67,7 @@ function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 1 / 30);
   last = now;
 
-  if (state.phase !== "won") {
+  if (state.phase !== "complete") {
     const input: Input = { left: held.left, right: held.right, jumpPressed: jumpQueued };
     jumpQueued = false;
     const previousPhase = state.phase;
