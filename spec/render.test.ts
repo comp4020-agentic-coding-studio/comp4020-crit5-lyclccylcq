@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { render, GROUND_VISUAL_H, WORLD_Y_OFFSET, SPIKE_COLOR } from "../game/render.ts";
 import {
   createInitialState,
+  LEVEL1_SPIKE_HAZARD,
   LEVEL2_COLLAPSE_TILE,
   LEVEL2_CHASM_2,
   LEVEL2_GROUND_SEGMENTS,
@@ -250,8 +251,26 @@ describe("requirement 2: the red spike hazard is now a fast-rising stone wall", 
     expect(renderTo(triggered).fillCalls.some((c) => c.fillStyle === SPIKE_COLOR)).toBe(false);
   });
 
-  it("still renders level 1's red spikes untouched — only level 2's trap changed", () => {
-    expect(renderTo(createInitialState(1)).fillCalls.some((c) => c.fillStyle === SPIKE_COLOR)).toBe(true);
+  it("no longer renders red spikes for level 1 either — it now uses the same stone wall as level 2", () => {
+    const atStart = renderTo(createInitialState(1));
+    expect(atStart.fillCalls.some((c) => c.fillStyle === SPIKE_COLOR)).toBe(false);
+
+    const risen: GameState = {
+      ...createInitialState(1),
+      traps: { ...createInitialState(1).traps, spikes: { triggered: true, timer: SPIKE_DELAY } },
+    };
+    expect(renderTo(risen).fillCalls.some((c) => c.fillStyle === SPIKE_COLOR)).toBe(false);
+  });
+
+  it("renders level 1's hazard as a rising stone wall once its timer has advanced", () => {
+    const state: GameState = {
+      ...createInitialState(1),
+      traps: { ...createInitialState(1).traps, spikes: { triggered: true, timer: SPIKE_DELAY * 0.5 } },
+    };
+    const draws = renderTo(state).fillRectCalls.filter(
+      (c) => c.x === LEVEL1_SPIKE_HAZARD.x && c.w === LEVEL1_SPIKE_HAZARD.w,
+    );
+    expect(draws.length).toBeGreaterThan(0);
   });
 
   it("draws nothing for the stone wall while it is untriggered", () => {

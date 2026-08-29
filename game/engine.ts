@@ -29,8 +29,6 @@ export const COLLAPSE_DELAY = 0.15;
 // from the moment it's triggered, not only once fully risen (see stepLevel2),
 // so this only governs how the rise looks, not when it becomes dangerous.
 export const SPIKE_DELAY = 0.45;
-// A breakable platform gives way this long after the player lands on it.
-export const PLATFORM_BREAK_DELAY = 0.25;
 // How long a death holds on the shatter animation before respawning.
 export const RESPAWN_DELAY = 0.5;
 // How long the "entering the door" animation plays before the level changes.
@@ -100,6 +98,9 @@ export interface Traps {
   collapse: TrapRuntime;
   spikes: TrapRuntime;
   fakeDoor: TrapRuntime;
+  // Reused for the Level 2 fence trap (see LEVEL2_FENCE below) — this field
+  // used to belong to the breakable staircase platform, which the fence
+  // replaced outright, so no new Traps field was needed for it.
   platform: TrapRuntime;
   chasmPlatform: TrapRuntime;
   pitCloud: TrapRuntime;
@@ -118,13 +119,20 @@ export interface GameState {
   traps: Traps;
   phaseTime: number;
   banner: { timer: number } | null;
+  deaths: number;
 }
 
 // --- Level 1: the honest teaching level -------------------------------------
-// Every hazard here is visible on sight, with no trigger and no timer. This
-// level exists to teach the normal rules of the game — floor is safe, a gap
-// needs a jump, a spike is a spike — entirely through fair play, so Level 2
-// can later break those same rules without ever having lied first.
+// Every hazard here is visible on sight, with nothing hidden and no surprise
+// trigger. The one hazard (LEVEL1_SPIKE_HAZARD below) shares Level 2's
+// rising-stone-wall look and its `spikes` TrapRuntime, but isn't
+// proximity-triggered the way Level 2's is: it starts already armed the
+// instant the level (re)loads (see createInitialState) and finishes rising
+// well before the player can possibly walk to it, so it's a real, visible
+// rise rather than an ambush. This level exists to teach the normal rules of
+// the game — floor is safe, a gap needs a jump, a wall is a wall — entirely
+// through fair play, so Level 2 can later break those same rules without ever
+// having lied first.
 
 export const LEVEL1_WIDTH = 1400;
 export const LEVEL1_SPAWN = { x: 60, y: GROUND_Y - PLAYER_H };
@@ -135,9 +143,12 @@ export const LEVEL1_GROUND_SEGMENTS: Rect[] = [
   { x: 1000, y: GROUND_Y, w: 400, h: 400 }, // gap 900-1000 (100px, the longer jump)
 ];
 
-// A plain, always-lethal hazard: no TrapRuntime, no arming, no delay. That
-// structural difference is what makes this a genuinely different hazard kind
-// from Level 2's popup spikes, not just a different name for the same thing.
+// Same footprint and lethal rule as ever — always deadly on overlap,
+// unconditional on any trap state — but rendered as the same rising stone
+// wall as Level 2's popup trap (see drawStoneWall in render.ts), reusing the
+// `spikes` TrapRuntime rather than a separate hazard kind. It auto-arms at
+// level start instead of via proximity (see createInitialState), since a
+// hidden trigger here would break this level's "nothing hidden, ever" deal.
 export const LEVEL1_SPIKE_HAZARD: Rect = { x: 680, y: GROUND_Y - 18, w: 80, h: 18 };
 
 export const LEVEL1_GOAL: Rect = { x: 1260, y: GROUND_Y - DOOR_H, w: DOOR_W, h: DOOR_H };
@@ -159,17 +170,42 @@ export const LEVEL2_GROUND_SEGMENTS: Rect[] = [
   { x: 450, y: GROUND_Y, w: 190, h: 400 },
   { x: 710, y: GROUND_Y, w: 440, h: 400 }, // gap 1150-1220 is the visible pit, see LEVEL2_PIT
   { x: 1220, y: GROUND_Y, w: 160, h: 400 },
-  { x: 1380, y: GROUND_Y, w: 770, h: 400 }, // carries the staircase and the real door
+  { x: 1380, y: GROUND_Y, w: 770, h: 400 }, // carries the fence and the real door
   { x: 2570, y: GROUND_Y, w: 230, h: 400 }, // carries both doors; 2150-2570 is the chasm
 ];
 
-// A short ascending staircase: each step is a comfortable +40 relative climb,
-// blocking its full vertical column like ordinary ground. Every step here is
-// permanently safe and stationary — STEP_3 is the deceptive breakable
-// platform (see part 4 below), which crumbles but never moves.
-export const LEVEL2_STEP_1: Rect = { x: 1680, y: GROUND_Y - 40, w: 90, h: 400 };
-export const LEVEL2_STEP_2: Rect = { x: 1770, y: GROUND_Y - 80, w: 130, h: 400 };
-export const LEVEL2_STEP_3: Rect = { x: 1900, y: GROUND_Y - 120, w: 70, h: 400 };
+// A small fence blocking the ground — the player has to actually jump it,
+// same as any ordinary solid obstacle, with nothing hidden about it. Sitting
+// on top of the existing ground segment, so unlike the old staircase steps it
+// only needs its own visible height, not a column all the way down.
+export const LEVEL2_FENCE: Rect = { x: 1700, y: GROUND_Y - 56, w: 34, h: 56 };
+// Comfortably faster than the player's own MOVE_SPEED, so once it's chasing,
+// standing still or just matching pace is not enough to stay ahead forever —
+// but see FENCE_CHASE_DISTANCE below for why it never actually needs to.
+export const FENCE_CHASE_SPEED = 360;
+// How far the fence is willing to chase before it gives up and holds its
+// ground — a real, felt threat right after it's triggered, but capped well
+// short of the chasm, so a triggered-then-outrun fence can never resurface
+// later during the chasm crossing or the backtrack to the real door. Paired
+// deliberately with LEVEL2_FENCE_TRIGGER_MARGIN below: the fence only closes
+// on the player at (FENCE_CHASE_SPEED - MOVE_SPEED) = 40px/s, so the head
+// start banked before the chase even starts has to outlast the whole capped
+// chase (200 / 360 ≈ 0.56s, closing ≈22px) with room to spare, or a player
+// who keeps running at ordinary speed would get caught regardless of the cap.
+export const FENCE_CHASE_DISTANCE = 200;
+// A stretch of ground clear of the fence's own footprint — landing here (not
+// merely jumping over the fence mid-air) is what arms the chase, so jumping
+// onto or over the fence itself never triggers it. Deliberately wider than a
+// token gap (see FENCE_CHASE_DISTANCE above): it's what banks the player's
+// head start before the chase begins, without which the fence's own speed
+// advantage would close the gap almost the instant it starts moving.
+const LEVEL2_FENCE_TRIGGER_MARGIN = 100;
+export const LEVEL2_FENCE_TRIGGER: Rect = {
+  x: LEVEL2_FENCE.x + LEVEL2_FENCE.w + LEVEL2_FENCE_TRIGGER_MARGIN,
+  y: 0,
+  w: 60,
+  h: GROUND_Y,
+};
 
 // A row of thin floating platforms crossing the chasm at 2150-2570. CHASM_1 is
 // permanently safe. CHASM_2 is a one-time deceptive moving platform (see
@@ -273,7 +309,10 @@ export function levelWidth(level: Level): number {
   return level === 1 ? LEVEL1_WIDTH : LEVEL2_WIDTH;
 }
 
-export function createInitialState(level: Level = 1, opts?: { announce?: boolean }): GameState {
+export function createInitialState(
+  level: Level = 1,
+  opts?: { announce?: boolean; deaths?: number },
+): GameState {
   const spawn = level === 1 ? LEVEL1_SPAWN : LEVEL2_SPAWN;
   const announce = opts?.announce ?? true;
   return {
@@ -282,7 +321,10 @@ export function createInitialState(level: Level = 1, opts?: { announce?: boolean
     player: { x: spawn.x, y: spawn.y, vx: 0, vy: 0, onGround: false, facing: 1 },
     traps: {
       collapse: { triggered: false, timer: 0 },
-      spikes: { triggered: false, timer: 0 },
+      // Level 1 reuses this same field for its wall hazard, auto-armed the
+      // instant the level loads — see the comment on LEVEL1_SPIKE_HAZARD.
+      // Level 2 still arms it only via LEVEL2_SPIKE_TRIGGER, as before.
+      spikes: { triggered: level === 1, timer: 0 },
       fakeDoor: { triggered: false, timer: 0 },
       platform: { triggered: false, timer: 0 },
       chasmPlatform: { triggered: false, timer: 0 },
@@ -290,6 +332,7 @@ export function createInitialState(level: Level = 1, opts?: { announce?: boolean
     },
     phaseTime: 0,
     banner: announce ? { timer: 0 } : null,
+    deaths: opts?.deaths ?? 0,
   };
 }
 
@@ -303,20 +346,6 @@ export function playerRect(p: Player): Rect {
 
 function isGone(trap: TrapRuntime, delay: number = COLLAPSE_DELAY): boolean {
   return trap.triggered && trap.timer >= delay;
-}
-
-// A landing check, not an overlap check: resolveMovement snaps a resting
-// player's feet exactly onto the rect's top edge, so plain rectsOverlap (which
-// needs vertical penetration) never sees steady contact. This only reads true
-// while the player is actually resting on this specific rect — never while
-// mid-air passing over or under it.
-function standingOn(player: Player, rect: Rect): boolean {
-  return (
-    player.onGround &&
-    Math.abs(player.y + PLAYER_H - rect.y) < 0.5 &&
-    player.x + PLAYER_W > rect.x &&
-    player.x < rect.x + rect.w
-  );
 }
 
 // CHASM_2's current position: ordinary and stationary until its trap has
@@ -345,17 +374,29 @@ export function pitCloudRect(trap: TrapRuntime): Rect {
   return { x: LEVEL2_PIT_CLOUD_X, y, w: LEVEL2_PIT_CLOUD_W, h: LEVEL2_PIT_CLOUD_H };
 }
 
+// The fence's current position: stationary at its original spot until
+// triggered, then sliding right at FENCE_CHASE_SPEED — capped at
+// FENCE_CHASE_DISTANCE total travel — for as long as the chase lasts. Same
+// "compute position from the trap's own timer" shape as chasmPlatformRect and
+// pitCloudRect above.
+export function fenceRect(trap: TrapRuntime): Rect {
+  if (!trap.triggered) return LEVEL2_FENCE;
+  const travelled = Math.min(FENCE_CHASE_SPEED * trap.timer, FENCE_CHASE_DISTANCE);
+  return { ...LEVEL2_FENCE, x: LEVEL2_FENCE.x + travelled };
+}
+
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
 export function solidRects(traps: Traps): Rect[] {
   const rects = [
     ...LEVEL2_GROUND_SEGMENTS,
-    LEVEL2_STEP_1,
-    LEVEL2_STEP_2,
     LEVEL2_CHASM_1,
     chasmPlatformRect(traps.chasmPlatform),
   ];
   if (!isGone(traps.collapse)) rects.push(LEVEL2_COLLAPSE_TILE, { ...LEVEL2_COLLAPSE_TILE, h: 400 });
-  if (!isGone(traps.platform, PLATFORM_BREAK_DELAY)) rects.push(LEVEL2_STEP_3);
+  // Solid (blocks movement, forces a jump) until triggered — once the chase
+  // starts, it's a hazard to touch rather than a wall to bump into, same as
+  // spikes/the fake door/the pit cloud once they're armed (see stepLevel2).
+  if (!traps.platform.triggered) rects.push(LEVEL2_FENCE);
   return rects;
 }
 
@@ -425,20 +466,27 @@ function integratePlayer(
 }
 
 function stepLevel1(state: GameState, input: Input, dt: number): GameState {
+  // The wall is armed from the moment the level loads (see
+  // createInitialState) — this just advances its rise; there's no trigger to
+  // check here, unlike Level 2's proximity-armed version of the same trap.
+  const traps: Traps = {
+    ...state.traps,
+    spikes: { ...state.traps.spikes, timer: state.traps.spikes.timer + dt },
+  };
   const player = integratePlayer(state.player, input, dt, LEVEL1_GROUND_SEGMENTS, LEVEL1_WIDTH);
 
   if (player.x + PLAYER_W >= LEVEL1_GOAL.x) {
     // Reaching the goal plays a short door-entry animation before the level
     // actually changes — see tickEntering().
-    return { ...state, player, phase: "entering", phaseTime: 0 };
+    return { ...state, player, traps, phase: "entering", phaseTime: 0 };
   }
   if (player.y > DEATH_Y) {
-    return { ...state, player, phase: "dead", phaseTime: 0 };
+    return { ...state, player, traps, phase: "dead", phaseTime: 0, deaths: state.deaths + 1 };
   }
   if (rectsOverlap(playerRect(player), LEVEL1_SPIKE_HAZARD)) {
-    return { ...state, player, phase: "dead", phaseTime: 0 };
+    return { ...state, player, traps, phase: "dead", phaseTime: 0, deaths: state.deaths + 1 };
   }
-  return { ...state, player };
+  return { ...state, player, traps };
 }
 
 function stepLevel2(state: GameState, input: Input, dt: number): GameState {
@@ -487,20 +535,20 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
   ) {
     traps.fakeDoor = { triggered: true, timer: 0 };
   }
+  // The fence only arms once the player has actually landed clear on the far
+  // side and kept going — reaching this zone requires having jumped the
+  // fence first, so merely approaching or jumping directly over it (without
+  // continuing past) never triggers the chase.
+  if (!traps.platform.triggered && rectsOverlap(playerRect(state.player), LEVEL2_FENCE_TRIGGER)) {
+    traps.platform = { triggered: true, timer: 0 };
+  }
   if (traps.spikes.triggered) traps.spikes.timer += dt;
   if (traps.collapse.triggered) traps.collapse.timer += dt;
   if (traps.chasmPlatform.triggered) traps.chasmPlatform.timer += dt;
   if (traps.pitCloud.triggered) traps.pitCloud.timer += dt;
+  if (traps.platform.triggered) traps.platform.timer += dt;
 
   const player = integratePlayer(state.player, input, dt, solidRects(traps), LEVEL2_WIDTH);
-
-  // Unlike the proximity traps above, the breakable platform only arms once
-  // the player has actually landed on it this frame — never on approach, and
-  // never just from passing underneath or beside it.
-  if (!traps.platform.triggered && standingOn(player, LEVEL2_STEP_3)) {
-    traps.platform = { triggered: true, timer: 0 };
-  }
-  if (traps.platform.triggered) traps.platform.timer += dt;
 
   // The real door only ever appears once the fake door has been baited into
   // revealing it (see LEVEL2_FAKE_DOOR_REVEAL_TRIGGER above and drawDoors in
@@ -524,9 +572,14 @@ function stepLevel2(state: GameState, input: Input, dt: number): GameState {
     // The falling cloud is never solid either — it kills on contact, the
     // same as the fake door and spikes, rather than blocking the jump.
     phase = "dead";
+  } else if (traps.platform.triggered && rectsOverlap(playerRect(player), fenceRect(traps.platform))) {
+    // Once chasing, the fence is no longer solid — it kills on contact,
+    // the same as every other armed hazard here.
+    phase = "dead";
   }
 
-  return { ...state, phase, player, traps, phaseTime: 0 };
+  const deaths = phase === "dead" ? state.deaths + 1 : state.deaths;
+  return { ...state, phase, player, traps, phaseTime: 0, deaths };
 }
 
 /**
@@ -558,7 +611,7 @@ function tickDead(state: GameState, dt: number): GameState {
     // Every trap — including the chasm platform — resets with the rest of
     // the level: the moving-platform trick is one-time only per life, not
     // globally, so each new attempt gets its own first genuine try at it.
-    return createInitialState(state.level, { announce: false });
+    return createInitialState(state.level, { announce: false, deaths: state.deaths });
   }
   return { ...state, phaseTime };
 }
@@ -566,9 +619,13 @@ function tickDead(state: GameState, dt: number): GameState {
 function tickEntering(state: GameState, dt: number): GameState {
   const phaseTime = state.phaseTime + dt;
   if (phaseTime < DOOR_ENTER_DELAY) return { ...state, phaseTime };
-  // Level 1's door leads on to Level 2; Level 2's door is the last one there
-  // is — there's no Level 3 to load, so this ends the game instead.
-  return state.level === 1 ? createInitialState(2) : { ...state, phase: "complete", phaseTime: 0 };
+  // Level 1's door leads on to Level 2 — the death count carries over, since
+  // it's still the same run. Level 2's door is the last one there is — no
+  // Level 3 to load, so this ends the game instead, and clearing it resets
+  // the death count for the next run.
+  return state.level === 1
+    ? createInitialState(2, { deaths: state.deaths })
+    : { ...state, phase: "complete", phaseTime: 0, deaths: 0 };
 }
 
 export function cameraX(playerX: number, width: number): number {

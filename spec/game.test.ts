@@ -24,12 +24,13 @@ import {
   LEVEL2_REAL_DOOR,
   LEVEL2_SPIKE_TRIGGER,
   LEVEL2_SPIKE_ZONE,
-  LEVEL2_STEP_1,
-  LEVEL2_STEP_2,
-  LEVEL2_STEP_3,
+  LEVEL2_FENCE,
+  LEVEL2_FENCE_TRIGGER,
+  FENCE_CHASE_SPEED,
+  FENCE_CHASE_DISTANCE,
+  fenceRect,
   LEVEL2_CHASM_1,
   LEVEL2_CHASM_2,
-  PLATFORM_BREAK_DELAY,
   SPIKE_DELAY,
   RESPAWN_DELAY,
   DOOR_ENTER_DELAY,
@@ -121,6 +122,31 @@ describe("level selector in the nav bar", () => {
     const level2 = control?.querySelector('[data-level="2"]');
     expect(level1?.getAttribute("aria-pressed")).toBe("true");
     expect(level2?.getAttribute("aria-pressed")).toBe("false");
+  });
+});
+
+describe("game logo in the header", () => {
+  const home = pages.find(({ path }) => path.endsWith("index.html"));
+
+  it("shows the game's name as a compact logo inside the header/nav area, not a separate centered title", () => {
+    const heading = home?.doc.querySelector("h1");
+    expect(heading, "the page's one h1 is the logo").toBeTruthy();
+    expect(heading?.textContent?.trim()).toBe("Pip's Detour");
+    expect(heading?.closest("nav"), "the logo lives in the nav/header, not floating above the canvas").toBeTruthy();
+  });
+
+  it("has exactly one heading with the game's name — no duplicate title left over main/canvas", () => {
+    const headings = Array.from(home?.doc.querySelectorAll("h1, h2") ?? []).filter(
+      (el) => el.textContent?.trim() === "Pip's Detour",
+    );
+    expect(headings.length).toBe(1);
+    expect(home?.doc.querySelector("main")?.textContent?.trim()).toBe("");
+  });
+
+  it("still keeps the Home link, level selector, and death counter alongside the logo", () => {
+    expect(home?.doc.querySelector('nav a[href="./"]')?.textContent?.trim()).toBe("Home");
+    expect(home?.doc.querySelector("#level-select")).toBeTruthy();
+    expect(home?.doc.querySelector("#death-count")).toBeTruthy();
   });
 });
 
@@ -227,7 +253,7 @@ describe("play can be lost", () => {
     expect(next.phase).toBe("dead");
   });
 
-  it("ends the round when the level 1 player touches the visible spike hazard", () => {
+  it("ends the round when the level 1 player touches the stone wall hazard", () => {
     const state = createInitialState(1);
     state.player = {
       ...state.player,
@@ -239,6 +265,20 @@ describe("play can be lost", () => {
     const next = step(state, noInput, 1 / 60);
 
     expect(next.phase).toBe("dead");
+  });
+
+  it("level 1's stone wall hazard auto-arms the instant the level loads, using the same trap field as level 2's wall", () => {
+    const state = createInitialState(1);
+    expect(state.traps.spikes.triggered).toBe(true);
+    expect(state.traps.spikes.timer).toBe(0);
+  });
+
+  it("level 1's stone wall finishes rising well before the fastest possible approach reaches it, so it's never an ambush", () => {
+    const state = createInitialState(1);
+    // Best case for an ambush: a straight, ungapped, full-speed sprint — the
+    // real approach is slower still, since it also has to clear two gaps.
+    const fastestTimeToReach = (LEVEL1_SPIKE_HAZARD.x - state.player.x) / MOVE_SPEED;
+    expect(SPIKE_DELAY).toBeLessThan(fastestTimeToReach);
   });
 
   it("plays a short door-entry animation before advancing to level 2", () => {
@@ -292,12 +332,12 @@ describe("play can be lost", () => {
     expect(next.phase).toBe("dead");
   });
 
-  it("moves the spike hazard left, leaving clear room to approach the staircase after it", () => {
-    // Previously the zone started at x=1560, hard up against STEP_1 at 1680.
+  it("moves the spike hazard left, leaving clear room to approach the fence after it", () => {
+    // Previously the zone started at x=1560, hard up against the obstacle at 1680.
     expect(LEVEL2_SPIKE_ZONE.x).toBeLessThan(1560);
 
-    const gapToStaircase = LEVEL2_STEP_1.x - (LEVEL2_SPIKE_ZONE.x + LEVEL2_SPIKE_ZONE.w);
-    expect(gapToStaircase).toBeGreaterThanOrEqual(100); // enough room to land and line up the climb
+    const gapToFence = LEVEL2_FENCE.x - (LEVEL2_SPIKE_ZONE.x + LEVEL2_SPIKE_ZONE.w);
+    expect(gapToFence).toBeGreaterThanOrEqual(100); // enough room to land and line up the jump
   });
 
   it("keeps the spike trigger tight against the zone, not far back down the approach", () => {
@@ -983,7 +1023,123 @@ describe("play can be lost", () => {
       expect(trap.timer).toBe(0);
     }
   });
+});
 
+describe("death count tracking", () => {
+  function respawn(state: GameState): GameState {
+    const maxFrames = Math.ceil(RESPAWN_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (state.phase === "dead" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+    return state;
+  }
+
+  it("starts a fresh run at zero deaths", () => {
+    expect(createInitialState(1).deaths).toBe(0);
+    expect(createInitialState(2).deaths).toBe(0);
+  });
+
+  it("increments by exactly one on a level 1 death, not once per frame while dead", () => {
+    let state = createInitialState(1);
+    state.player = { ...state.player, x: 420, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+    expect(state.deaths).toBe(1);
+
+    // Keep stepping through the rest of the death animation — the count must
+    // not creep up again before the respawn actually happens.
+    for (let i = 0; i < 5 && state.phase === "dead"; i++) {
+      state = step(state, noInput, 1 / 60);
+      expect(state.deaths).toBe(1);
+    }
+  });
+
+  it("increments by exactly one on a level 2 death, not once per frame while dead", () => {
+    let state = createInitialState(2);
+    state.player = { ...state.player, x: 400, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+    expect(state.deaths).toBe(1);
+
+    for (let i = 0; i < 5 && state.phase === "dead"; i++) {
+      state = step(state, noInput, 1 / 60);
+      expect(state.deaths).toBe(1);
+    }
+  });
+
+  it("persists the death count across a respawn", () => {
+    let state = createInitialState(1);
+    state.player = { ...state.player, x: 420, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    expect(state.deaths).toBe(1);
+
+    state = respawn(state);
+
+    expect(state.phase).toBe("playing");
+    expect(state.deaths).toBe(1);
+  });
+
+  it("persists the death count from level 1 into level 2", () => {
+    let state = createInitialState(1);
+    // Die once on level 1, respawn, then reach the goal.
+    state.player = { ...state.player, x: 420, y: DEATH_Y + 1, onGround: false };
+    state = step(state, noInput, 1 / 60);
+    state = respawn(state);
+    expect(state.deaths).toBe(1);
+
+    state.player = { ...state.player, x: LEVEL1_GOAL.x, y: GROUND_Y - PLAYER_H, onGround: true };
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("entering");
+
+    const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (state.phase === "entering" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+
+    expect(state.level).toBe(2);
+    expect(state.phase).toBe("playing");
+    expect(state.deaths).toBe(1);
+  });
+
+  it("resets the death count to zero once the game is fully cleared", () => {
+    let state = createInitialState(2);
+    state.deaths = 3;
+    state.player = {
+      ...state.player,
+      x: LEVEL2_REAL_DOOR.x,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+    state.traps.fakeDoor = { triggered: true, timer: 0 };
+
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("entering");
+
+    const maxFrames = Math.ceil(DOOR_ENTER_DELAY / (1 / 60)) + 2;
+    let frames = 0;
+    while (state.phase === "entering" && frames < maxFrames) {
+      state = step(state, noInput, 1 / 60);
+      frames++;
+    }
+
+    expect(state.phase).toBe("complete");
+    expect(state.deaths).toBe(0);
+  });
+
+  it("resets to zero on a fresh createInitialState call, covering restart and level-select", () => {
+    // main.ts's restartTo() and the level-select flow both call
+    // createInitialState(level) with no opts — the default deaths:0 covers
+    // both "restart from level 1" and "manually pick a level" resets.
+    expect(createInitialState(1).deaths).toBe(0);
+    expect(createInitialState(2).deaths).toBe(0);
+  });
+});
+
+describe("play can be lost", () => {
   it("repairs the old leftover terrain into one continuous ground segment, no island or gap", () => {
     // The old layout left a fragment ending at 1900, a 10px island at
     // 1970-1980, and a segment resuming at 2050 — a visible "something used
@@ -994,26 +1150,25 @@ describe("play can be lost", () => {
     expect(covering, "no continuous ground segment spans the old hole/island location").toBeTruthy();
   });
 
-  it("keeps the staircase's safe steps and both chasm platforms always present, regardless of trap state", () => {
+  it("keeps the fence and both chasm platforms present while untriggered, regardless of other trap state", () => {
     const untouched = solidRects(createInitialState(2).traps);
     const midCollapse = solidRects({
       collapse: { triggered: true, timer: 0 },
       spikes: { triggered: false, timer: 0 },
       fakeDoor: { triggered: true, timer: 0 },
-      platform: { triggered: true, timer: 0 },
+      platform: { triggered: false, timer: 0 },
       chasmPlatform: { triggered: false, timer: 0 },
       pitCloud: { triggered: false, timer: 0 },
     });
 
     for (const rects of [untouched, midCollapse]) {
-      expect(rects).toContainEqual(LEVEL2_STEP_1);
-      expect(rects).toContainEqual(LEVEL2_STEP_2);
+      expect(rects).toContainEqual(LEVEL2_FENCE);
       expect(rects).toContainEqual(LEVEL2_CHASM_1);
       expect(rects).toContainEqual(LEVEL2_CHASM_2);
     }
   });
 
-  it("never moves the left staircase steps, no matter what state the chasm platform trap is in", () => {
+  it("never moves the fence's resting position, no matter what state the chasm platform trap is in", () => {
     const baseTraps = {
       collapse: { triggered: false, timer: 0 },
       spikes: { triggered: false, timer: 0 },
@@ -1030,20 +1185,24 @@ describe("play can be lost", () => {
 
     for (const chasmPlatform of chasmPlatformStates) {
       const rects = solidRects({ ...baseTraps, chasmPlatform });
-      expect(rects).toContainEqual(LEVEL2_STEP_1);
-      expect(rects).toContainEqual(LEVEL2_STEP_2);
+      expect(rects).toContainEqual(LEVEL2_FENCE);
     }
   });
 
-  it("does not arm the breakable platform just from passing under or beside it", () => {
+  it("places the fence on the map from the start, stationary, and solid like an ordinary obstacle", () => {
     const state = createInitialState(2);
-    // Jumping up right beside the platform, never resting on top of it.
+    expect(state.traps.platform).toEqual({ triggered: false, timer: 0 });
+    expect(fenceRect(state.traps.platform)).toEqual(LEVEL2_FENCE);
+    expect(solidRects(state.traps)).toContainEqual(LEVEL2_FENCE);
+  });
+
+  it("does not arm the fence chase just from approaching it", () => {
+    const state = createInitialState(2);
     state.player = {
       ...state.player,
-      x: LEVEL2_STEP_3.x - PLAYER_W - 2,
-      y: LEVEL2_STEP_3.y,
-      vy: -300,
-      onGround: false,
+      x: LEVEL2_FENCE.x - 200,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
     };
 
     const next = step(state, noInput, 1 / 60);
@@ -1051,12 +1210,29 @@ describe("play can be lost", () => {
     expect(next.traps.platform.triggered).toBe(false);
   });
 
-  it("arms the breakable platform once the player actually lands on it", () => {
+  it("does not arm the fence chase from clearing it but landing short of the trigger zone", () => {
+    const state = createInitialState(2);
+    // Just past the fence's own footprint, but not yet into
+    // LEVEL2_FENCE_TRIGGER — a jump that clears the fence without going a
+    // further short distance past it.
+    state.player = {
+      ...state.player,
+      x: LEVEL2_FENCE_TRIGGER.x - PLAYER_W - 1,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.traps.platform.triggered).toBe(false);
+  });
+
+  it("arms the fence chase once the player has jumped over it and passed a short distance beyond", () => {
     const state = createInitialState(2);
     state.player = {
       ...state.player,
-      x: LEVEL2_STEP_3.x + 10,
-      y: LEVEL2_STEP_3.y - PLAYER_H,
+      x: LEVEL2_FENCE_TRIGGER.x + 10,
+      y: GROUND_Y - PLAYER_H,
       onGround: true,
     };
 
@@ -1065,22 +1241,74 @@ describe("play can be lost", () => {
     expect(next.traps.platform.triggered).toBe(true);
   });
 
-  it("removes the broken platform from solid ground only after its break delay elapses", () => {
+  it("removes the fence from solid ground once its chase is triggered", () => {
     let state = createInitialState(2);
     state.player = {
       ...state.player,
-      x: LEVEL2_STEP_3.x + 10,
-      y: LEVEL2_STEP_3.y - PLAYER_H,
+      x: LEVEL2_FENCE_TRIGGER.x + 10,
+      y: GROUND_Y - PLAYER_H,
       onGround: true,
     };
     state = step(state, noInput, 1 / 60);
     expect(state.traps.platform.triggered).toBe(true);
+    expect(solidRects(state.traps)).not.toContainEqual(LEVEL2_FENCE);
+  });
 
-    // Still within the delay: the platform is armed but not yet gone.
-    expect(solidRects(state.traps)).toContainEqual(LEVEL2_STEP_3);
+  it("moves the triggered fence to the right faster than the player's own move speed, capped at a chase distance", () => {
+    expect(FENCE_CHASE_SPEED).toBeGreaterThan(MOVE_SPEED);
 
-    state.traps.platform.timer = PLATFORM_BREAK_DELAY;
-    expect(solidRects(state.traps)).not.toContainEqual(LEVEL2_STEP_3);
+    const midChase = fenceRect({ triggered: true, timer: 0.2 });
+    expect(midChase.x).toBe(LEVEL2_FENCE.x + FENCE_CHASE_SPEED * 0.2);
+
+    const longAfter = fenceRect({ triggered: true, timer: 999 });
+    expect(longAfter.x).toBe(LEVEL2_FENCE.x + FENCE_CHASE_DISTANCE);
+  });
+
+  it("does not hurt the player while untriggered, even standing right beside it", () => {
+    const state = createInitialState(2);
+    state.player = {
+      ...state.player,
+      x: LEVEL2_FENCE.x - PLAYER_W,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.phase).toBe("playing");
+  });
+
+  it("kills the player on contact with the moving fence once triggered", () => {
+    const state = createInitialState(2);
+    state.traps.platform = { triggered: true, timer: 0.1 };
+    const chasing = fenceRect(state.traps.platform);
+    state.player = {
+      ...state.player,
+      x: chasing.x,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+
+    const next = step(state, noInput, 1 / 60);
+
+    expect(next.phase).toBe("dead");
+  });
+
+  it("resets the fence to its original position and inactive state on death/respawn", () => {
+    let state = createInitialState(2);
+    state.traps.platform = { triggered: true, timer: 0.2 };
+    state.player = { ...state.player, y: DEATH_Y + 1, onGround: false };
+
+    state = step(state, noInput, 1 / 60);
+    expect(state.phase).toBe("dead");
+
+    for (let i = 0; i < Math.ceil(RESPAWN_DELAY * 60) + 1; i++) {
+      state = step(state, noInput, 1 / 60);
+    }
+
+    expect(state.phase).toBe("playing");
+    expect(state.traps.platform).toEqual({ triggered: false, timer: 0 });
+    expect(fenceRect(state.traps.platform)).toEqual(LEVEL2_FENCE);
   });
 
   it("does not arm the chasm platform merely from resting at CHASM_1's far edge", () => {
@@ -1305,13 +1533,13 @@ describe("play can be lost", () => {
     expect(chasmPlatformRect(recreated.traps.chasmPlatform)).toEqual(LEVEL2_CHASM_2);
   });
 
-  // A full scripted run over just the new content (staircase, chasm,
-  // backtrack), starting a bit past the pre-existing collapse tile and spike
-  // zone — those hazards already have their own dedicated tests above and
-  // aren't part of this rework; isolating this run to the new terrain is what
-  // actually proves "every new jump is reachable" against the real engine,
-  // without re-litigating unrelated hazard timing.
-  it("climbs the staircase, crosses the chasm, triggers the fake door, and wins via the real door on the backtrack", () => {
+  // A full scripted run over just the new content (fence, chasm, backtrack),
+  // starting a bit past the pre-existing collapse tile and spike zone — those
+  // hazards already have their own dedicated tests above and aren't part of
+  // this rework; isolating this run to the new terrain is what actually
+  // proves "every new jump is reachable" against the real engine, without
+  // re-litigating unrelated hazard timing.
+  it("jumps the fence, crosses the chasm, triggers the fake door, and wins via the real door on the backtrack", () => {
     const right: Input = { left: false, right: true, jumpPressed: false };
     const rightJump: Input = { left: false, right: true, jumpPressed: true };
     const left: Input = { left: true, right: false, jumpPressed: false };
@@ -1340,27 +1568,21 @@ describe("play can be lost", () => {
       }
     };
 
-    const crossStaircaseAndChasm1 = () => {
+    const crossFenceAndChasm1 = () => {
       run(right, 6);
-      hop("right", 10); // onto STEP_1 — permanently static, never moves
+      hop("right", 18); // over the fence, landing clear on the far side — short of the trigger zone, so the chase isn't armed yet
       expect(state.phase).toBe("playing");
+      expect(state.traps.platform.triggered).toBe(false);
 
-      run(right, 10);
-      hop("right", 10); // onto STEP_2 — also permanently static, a plain landing
-      expect(state.phase).toBe("playing");
-
-      run(right, 14);
-      hop("right", 8); // onto STEP_3 — the breakable platform, arms on landing
+      run(right, 75); // into the trigger zone and on toward the chasm edge — arms the chase partway through, but the head start plus the chase's own distance cap keep it from ever closing the gap
       expect(state.phase).toBe("playing");
       expect(state.traps.platform.triggered).toBe(true);
 
-      run(right, 7);
-      run(right, 32); // off the staircase, across the base ground to the chasm edge
       hop("right", 20); // onto CHASM_1 — permanently safe
       expect(state.phase).toBe("playing");
     };
 
-    crossStaircaseAndChasm1();
+    crossFenceAndChasm1();
 
     // First genuine attempt to land on CHASM_2: the trap fires, the platform
     // snaps away mid-air, and — unlike the staircase — there's nothing but
@@ -1385,7 +1607,7 @@ describe("play can be lost", () => {
 
     // Re-cross the earlier hazards exactly as the first time.
     state.player = { ...state.player, x: 1650, y: GROUND_Y - PLAYER_H, onGround: true, vx: 0, vy: 0 };
-    crossStaircaseAndChasm1();
+    crossFenceAndChasm1();
 
     // The trap is fresh again this life. A full-speed jump held all the way
     // across no longer survives — the platform now moves far enough away

@@ -9,12 +9,9 @@ import {
   LEVEL2_GROUND_SEGMENTS,
   LEVEL2_SPIKE_ZONE,
   LEVEL2_COLLAPSE_TILE,
-  LEVEL2_STEP_1,
-  LEVEL2_STEP_2,
-  LEVEL2_STEP_3,
+  LEVEL2_FENCE,
   LEVEL2_CHASM_1,
   LEVEL2_CHASM_2,
-  PLATFORM_BREAK_DELAY,
   PLAYER_H,
   PLAYER_W,
   VIEWPORT_HEIGHT,
@@ -26,6 +23,7 @@ import {
   SPIKE_DELAY,
   isGone,
   chasmPlatformRect,
+  fenceRect,
   pitCloudRect,
   LEVEL2_PIT_CLOUD_W,
   LEVEL2_PIT_CLOUD_H,
@@ -47,6 +45,8 @@ const DOOR_PANEL = "#3fae5a";
 const DOOR_KNOB = "#f4e4b8";
 const WALL_BLOCKED = "#6b5a4a";
 const WALL_PLANK = "#4a3826";
+const FENCE_WOOD = "#7a5230";
+const FENCE_RAIL = "#a9743f";
 
 // Visual-only rise height — taller than the trap's actual (much shorter)
 // collision zone, same as every ground slab already being drawn taller than
@@ -195,15 +195,7 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
     groundFoundation(ctx, LEVEL2_COLLAPSE_TILE);
   }
 
-  // The staircase: all three steps are permanently fixed in place, drawn as
-  // plain ground with zero visual difference before anything happens. The
-  // top step looks identical until it's been landed on — only then does it
-  // switch to a "breaking" look, and only until it's gone.
-  groundSlab(ctx, LEVEL2_STEP_1, false);
-  groundSlab(ctx, LEVEL2_STEP_2, false);
-  if (!isGone(state.traps.platform, PLATFORM_BREAK_DELAY)) {
-    groundSlab(ctx, LEVEL2_STEP_3, state.traps.platform.triggered);
-  }
+  drawFence(ctx, state.traps.platform);
 
   // The chasm platforms: distinct floating slabs rather than ground columns.
   // CHASM_1 is permanently safe. CHASM_2 is drawn wherever its trap currently
@@ -211,6 +203,21 @@ function drawGround(ctx: CanvasRenderingContext2D, state: GameState): void {
   floatingPlatform(ctx, LEVEL2_CHASM_1, false);
   floatingPlatform(ctx, chasmPlatformRect(state.traps.chasmPlatform), false);
 
+}
+
+// A small wooden fence: two posts and two rails, deliberately reading as a
+// barrier to hop rather than a stair or platform to stand on. Drawn wherever
+// fenceRect currently puts it — stationary until triggered, then sliding
+// right as it chases.
+function drawFence(ctx: CanvasRenderingContext2D, trap: TrapRuntime): void {
+  const rect = fenceRect(trap);
+  const postW = 6;
+  ctx.fillStyle = FENCE_WOOD;
+  ctx.fillRect(rect.x, rect.y, postW, rect.h);
+  ctx.fillRect(rect.x + rect.w - postW, rect.y, postW, rect.h);
+  ctx.fillStyle = FENCE_RAIL;
+  ctx.fillRect(rect.x, rect.y + rect.h * 0.15, rect.w, rect.h * 0.16);
+  ctx.fillRect(rect.x, rect.y + rect.h * 0.6, rect.w, rect.h * 0.16);
 }
 
 // Same puffy, layered-arc look as the purely decorative background clouds —
@@ -226,21 +233,6 @@ function drawPitCloud(ctx: CanvasRenderingContext2D, state: GameState): void {
   ctx.arc(cx + r * 0.9, cy + r * 0.15, r * 0.75, 0, Math.PI * 2);
   ctx.arc(cx - r * 0.9, cy + r * 0.2, r * 0.65, 0, Math.PI * 2);
   ctx.fill();
-}
-
-function drawSpikeTriangles(ctx: CanvasRenderingContext2D, zone: Rect): void {
-  const count = 4;
-  const step = zone.w / count;
-  ctx.fillStyle = SPIKE_COLOR;
-  for (let i = 0; i < count; i++) {
-    const baseX = zone.x + i * step;
-    ctx.beginPath();
-    ctx.moveTo(baseX, zone.y + zone.h);
-    ctx.lineTo(baseX + step / 2, zone.y);
-    ctx.lineTo(baseX + step, zone.y + zone.h);
-    ctx.closePath();
-    ctx.fill();
-  }
 }
 
 // A stone wall trap: rises quickly from the ground once triggered, taller
@@ -265,12 +257,12 @@ function drawStoneWall(ctx: CanvasRenderingContext2D, zone: Rect, trap: TrapRunt
   }
 }
 
+// Both levels' wall traps share the same TrapRuntime field and the same
+// rising-stone-wall visual (see LEVEL1_SPIKE_HAZARD's comment in engine.ts) —
+// only the zone geometry differs.
 function drawSpikeHazards(ctx: CanvasRenderingContext2D, state: GameState): void {
-  if (state.level === 1) {
-    drawSpikeTriangles(ctx, LEVEL1_SPIKE_HAZARD);
-    return;
-  }
-  if (state.traps.spikes.triggered) drawStoneWall(ctx, LEVEL2_SPIKE_ZONE, state.traps.spikes);
+  const zone = state.level === 1 ? LEVEL1_SPIKE_HAZARD : LEVEL2_SPIKE_ZONE;
+  if (state.traps.spikes.triggered) drawStoneWall(ctx, zone, state.traps.spikes);
 }
 
 // A plain, recognisable open door — used for every honest exit, and for the

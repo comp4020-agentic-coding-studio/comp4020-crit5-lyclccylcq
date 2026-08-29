@@ -23,15 +23,20 @@
   <body>
     <header>
       <nav aria-label="Primary">
-        <a href="./">Home</a>
-        <div class="level-select" id="level-select" role="group" aria-label="Choose level">
-          <button type="button" data-level="1" aria-pressed="true">Level 1</button>
-          <button type="button" data-level="2" aria-pressed="false">Level 2</button>
+        <div class="brand">
+          <h1 class="logo">Pip's Detour</h1>
+        </div>
+        <div class="nav-controls">
+          <a href="./">Home</a>
+          <div class="level-select" id="level-select" role="group" aria-label="Choose level">
+            <button type="button" data-level="1" aria-pressed="true">Level 1</button>
+            <button type="button" data-level="2" aria-pressed="false">Level 2</button>
+          </div>
+          <span id="death-count" class="death-count">Deaths: 0</span>
         </div>
       </nav>
     </header>
     <main>
-      <h1 class="game-title">Pip's Detour</h1>
       <canvas id="game" aria-label="Pip's Detour game canvas"></canvas>
     </main>
     <script type="module" src="./main.ts"></script>

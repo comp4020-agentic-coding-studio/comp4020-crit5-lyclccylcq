@@ -20,6 +20,12 @@ const ctx: CanvasRenderingContext2D = context;
 
 let state: GameState = createInitialState(1);
 
+const deathCount = document.querySelector<HTMLElement>("#death-count");
+function updateDeathCount(): void {
+  if (deathCount) deathCount.textContent = `Deaths: ${state.deaths}`;
+}
+updateDeathCount();
+
 const held = { left: false, right: false };
 let jumpQueued = false;
 
@@ -49,6 +55,7 @@ window.addEventListener("keyup", (event) => {
 function restartTo(level: Level): void {
   state = createInitialState(level);
   document.body.dataset.gameState = state.phase;
+  updateDeathCount();
 }
 
 document.body.dataset.gameState = state.phase;
@@ -71,8 +78,10 @@ function frame(now: number): void {
     const input: Input = { left: held.left, right: held.right, jumpPressed: jumpQueued };
     jumpQueued = false;
     const previousPhase = state.phase;
+    const previousDeaths = state.deaths;
     state = step(state, input, dt);
     if (previousPhase !== state.phase) document.body.dataset.gameState = state.phase;
+    if (previousDeaths !== state.deaths) updateDeathCount();
   } else {
     jumpQueued = false;
   }

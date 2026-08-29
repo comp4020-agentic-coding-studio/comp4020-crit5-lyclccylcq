@@ -117,6 +117,21 @@ describe("level select control", () => {
     expect(state.banner).toEqual({ timer: 0 });
   });
 
+  it("resets the death count when the player manually switches levels mid-run", () => {
+    const dom = new JSDOM("<!doctype html><body></body>");
+    const container = buildLevelSelect(dom);
+    let state: GameState = { ...createInitialState(2), deaths: 4 };
+
+    wireLevelSelect(container, (level) => {
+      state = createInitialState(level);
+      setActiveLevel(container, level);
+    });
+    click(dom, buttonFor(container, 1));
+
+    expect(state.level).toBe(1);
+    expect(state.deaths).toBe(0);
+  });
+
   it("still works from the final completion state, after both levels are cleared", () => {
     const dom = new JSDOM("<!doctype html><body></body>");
     const container = buildLevelSelect(dom);
