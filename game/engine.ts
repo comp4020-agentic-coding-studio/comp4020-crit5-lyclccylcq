@@ -149,7 +149,7 @@ export const LEVEL1_GROUND_SEGMENTS: Rect[] = [
 // `spikes` TrapRuntime rather than a separate hazard kind. It auto-arms at
 // level start instead of via proximity (see createInitialState), since a
 // hidden trigger here would break this level's "nothing hidden, ever" deal.
-export const LEVEL1_SPIKE_HAZARD: Rect = { x: 680, y: GROUND_Y - 18, w: 80, h: 18 };
+export const LEVEL1_SPIKE_HAZARD: Rect = { x: 680, y: GROUND_Y - 18, w: 64, h: 18 };
 
 export const LEVEL1_GOAL: Rect = { x: 1260, y: GROUND_Y - DOOR_H, w: DOOR_W, h: DOOR_H };
 
@@ -178,21 +178,36 @@ export const LEVEL2_GROUND_SEGMENTS: Rect[] = [
 // same as any ordinary solid obstacle, with nothing hidden about it. Sitting
 // on top of the existing ground segment, so unlike the old staircase steps it
 // only needs its own visible height, not a column all the way down.
-export const LEVEL2_FENCE: Rect = { x: 1700, y: GROUND_Y - 56, w: 34, h: 56 };
+// Placed with real breathing room on both sides: 260px clear of the rising
+// stone wall (LEVEL2_SPIKE_ZONE) behind it, so it reads as its own standalone
+// obstacle rather than terrain stacked against the wall, and well short of
+// the cliff ahead (see LEVEL2_FENCE_CLIFF_X below) so there's genuine room to
+// jump it, land, react, and start running before any chase is even armed.
+export const LEVEL2_FENCE: Rect = { x: 1800, y: GROUND_Y - 56, w: 34, h: 56 };
 // Comfortably faster than the player's own MOVE_SPEED, so once it's chasing,
-// standing still or just matching pace is not enough to stay ahead forever —
-// but see FENCE_CHASE_DISTANCE below for why it never actually needs to.
-export const FENCE_CHASE_SPEED = 360;
-// How far the fence is willing to chase before it gives up and holds its
-// ground — a real, felt threat right after it's triggered, but capped well
-// short of the chasm, so a triggered-then-outrun fence can never resurface
-// later during the chasm crossing or the backtrack to the real door. Paired
-// deliberately with LEVEL2_FENCE_TRIGGER_MARGIN below: the fence only closes
-// on the player at (FENCE_CHASE_SPEED - MOVE_SPEED) = 40px/s, so the head
-// start banked before the chase even starts has to outlast the whole capped
-// chase (200 / 360 ≈ 0.56s, closing ≈22px) with room to spare, or a player
-// who keeps running at ordinary speed would get caught regardless of the cap.
-export const FENCE_CHASE_DISTANCE = 200;
+// standing still or just matching pace is not enough to stay ahead forever.
+export const FENCE_CHASE_SPEED = 400;
+// The ground segment carrying the fence ends here — the cliff overlooking the
+// chasm. The chase runs the fence all the way out to this edge rather than
+// stopping short of it; see fenceRect below for what happens once it gets
+// there.
+const fenceGroundSegment = LEVEL2_GROUND_SEGMENTS.find(
+  (seg) => seg.x <= LEVEL2_FENCE.x && seg.x + seg.w >= LEVEL2_FENCE.x + LEVEL2_FENCE.w,
+)!;
+export const LEVEL2_FENCE_CLIFF_X = fenceGroundSegment.x + fenceGroundSegment.w;
+// How far the fence travels before its right edge reaches the cliff edge —
+// the full remaining gap, not a short cap well short of it. Paired with
+// LEVEL2_FENCE_TRIGGER_MARGIN below: the head start banked before the chase
+// even starts still comfortably outlasts the chase itself, since the fence
+// only closes on a running player at (FENCE_CHASE_SPEED - MOVE_SPEED) =
+// 80px/s for the ~0.8s the chase takes to cover this distance.
+export const FENCE_CHASE_DISTANCE = LEVEL2_FENCE_CLIFF_X - (LEVEL2_FENCE.x + LEVEL2_FENCE.w);
+// Once the fence reaches the cliff edge, it doesn't stop awkwardly — it keeps
+// going, falling down into the chasm over this many seconds, well past the
+// bottom of the viewport so it settles somewhere it can never be reached
+// again (mirroring PIT_CLOUD_FALL_DURATION's "fall fully below viewport, stay
+// gone" shape).
+export const FENCE_FALL_DURATION = 0.4;
 // A stretch of ground clear of the fence's own footprint — landing here (not
 // merely jumping over the fence mid-air) is what arms the chase, so jumping
 // onto or over the fence itself never triggers it. Deliberately wider than a
@@ -275,7 +290,7 @@ export const LEVEL2_PIT_CLOUD_TRIGGER: Rect = {
   h: GROUND_Y,
 };
 
-export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 80, h: 18 };
+export const LEVEL2_SPIKE_ZONE: Rect = { x: 1460, y: GROUND_Y - 18, w: 64, h: 18 };
 // Starts right up against the zone itself, contiguous with it — the same
 // "immediately before, no early warning" shape as LEVEL2_COLLAPSE_TRIGGER.
 // Narrow and late on purpose: by the time SPIKE_DELAY has elapsed, a player
@@ -374,15 +389,28 @@ export function pitCloudRect(trap: TrapRuntime): Rect {
   return { x: LEVEL2_PIT_CLOUD_X, y, w: LEVEL2_PIT_CLOUD_W, h: LEVEL2_PIT_CLOUD_H };
 }
 
+// How long the horizontal chase itself takes to cover FENCE_CHASE_DISTANCE —
+// once this much of the trap's timer has elapsed, the fence's right edge is
+// at the cliff edge and it starts falling instead of sliding further right.
+const FENCE_CHASE_DURATION = FENCE_CHASE_DISTANCE / FENCE_CHASE_SPEED;
+// Where the fence ends up once it has fully fallen — well past the bottom of
+// the viewport, the same "gone for good" target pitCloudRect's fall uses.
+const FENCE_FALL_TARGET_Y = VIEWPORT_HEIGHT + LEVEL2_FENCE.h;
+
 // The fence's current position: stationary at its original spot until
-// triggered, then sliding right at FENCE_CHASE_SPEED — capped at
-// FENCE_CHASE_DISTANCE total travel — for as long as the chase lasts. Same
-// "compute position from the trap's own timer" shape as chasmPlatformRect and
-// pitCloudRect above.
+// triggered, then sliding right at FENCE_CHASE_SPEED until it reaches the
+// cliff edge, then falling straight down into the chasm over
+// FENCE_FALL_DURATION and staying gone. Same "compute position from the
+// trap's own timer" shape as chasmPlatformRect and pitCloudRect above.
 export function fenceRect(trap: TrapRuntime): Rect {
   if (!trap.triggered) return LEVEL2_FENCE;
   const travelled = Math.min(FENCE_CHASE_SPEED * trap.timer, FENCE_CHASE_DISTANCE);
-  return { ...LEVEL2_FENCE, x: LEVEL2_FENCE.x + travelled };
+  const x = LEVEL2_FENCE.x + travelled;
+  if (trap.timer <= FENCE_CHASE_DURATION) return { ...LEVEL2_FENCE, x };
+  const fallElapsed = trap.timer - FENCE_CHASE_DURATION;
+  const t = Math.min(fallElapsed / FENCE_FALL_DURATION, 1);
+  const y = LEVEL2_FENCE.y + (FENCE_FALL_TARGET_Y - LEVEL2_FENCE.y) * t;
+  return { ...LEVEL2_FENCE, x, y };
 }
 
 /** Every solid rect the player can stand on or bump into this frame, in Level 2. */
@@ -621,11 +649,13 @@ function tickEntering(state: GameState, dt: number): GameState {
   if (phaseTime < DOOR_ENTER_DELAY) return { ...state, phaseTime };
   // Level 1's door leads on to Level 2 — the death count carries over, since
   // it's still the same run. Level 2's door is the last one there is — no
-  // Level 3 to load, so this ends the game instead, and clearing it resets
-  // the death count for the next run.
+  // Level 3 to load, so this ends the game instead. The death count is left
+  // as-is (not reset here) so the completion UI can show the run's final
+  // tally; createInitialState's own default (see below) is what zeroes it
+  // again, once the player actually starts a new run.
   return state.level === 1
     ? createInitialState(2, { deaths: state.deaths })
-    : { ...state, phase: "complete", phaseTime: 0, deaths: 0 };
+    : { ...state, phase: "complete", phaseTime: 0 };
 }
 
 export function cameraX(playerX: number, width: number): number {

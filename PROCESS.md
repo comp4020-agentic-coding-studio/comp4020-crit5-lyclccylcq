@@ -1,70 +1,78 @@
 # Process overview
 
-<!-- TEMPLATE: this file is a shape to fill in, not a form. Replace everything
-     in it with your own overview, and delete this comment — `pnpm
-     check:evidence` will remind you if it's still here. -->
-
-A reading-guide to how the work came together --- a map to your process, not an
-essay about it. Markers read this file and follow its citations; they don't
-trawl the repo for evidence you didn't point at, so if a moment mattered, cite
-it.
-
-This file is the shape; the course site's
-[assessment page](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#what-you-submit)
-is the requirement, and its
-[word counts](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#word-counts)
-cover every deliverable.
-
 ## What I built
 
-One paragraph: the thing, and the idea behind it.
+Pip's Detour is a tiny browser platformer about distrust. It starts with the
+most ordinary platform-game vocabulary I could use: a character, ground, gaps,
+walls, doors, and clouds. The game then turns those familiar objects into traps:
+ground gives way, a cloud drops, a fence starts chasing, a door lies, and the
+actual exit appears only after the player has learned to bait the fake one. My
+goal was not to make a large game, but to make a short one that teaches itself
+through play and still has enough reversals to stay interesting after the first
+ten seconds.
 
 ## The moments that mattered
 
-Three or four for an assignment; fewer is fine for a weekly prototype. Keep the
-list short so each moment has room to do all four jobs:
+### Starting with the brief as a harness
 
-1. **what happened** --- the problem, or the thing that went wrong
-2. **what you did instead of the obvious thing** --- the call you made, and why
-   it beat the obvious one
-3. **how you knew it was right** --- the check you ran, the viewport you looked
-   at, what you read before accepting the diff
-4. **the citation** --- a commit or commit range, a `CLAUDE.md` change, a check
-   that went from red to green, a prompt paired with the commit it produced
+Before building the final interactions, I translated the Crit 5 requirements
+into checks: no tutorial pages, a real game page, losing states, ending states,
+and one explicitly tested rule. That made the brief part of the development
+environment rather than something I tried to remember at the end. The important
+decision here was to let tests describe the assignment contract while the game
+was still incomplete, so later changes had to keep satisfying the same basic
+shape. Evidence:
+[`a81f135`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-lyclccylcq/commit/a81f135).
 
-Jobs 2 and 3 are the ones the repo can't tell a reader on its own, so they're
-where the marks are. The strongest moments are the ones where a correction
-landed in the **harness** --- the standards and checks your work has to satisfy
---- rather than in a retry: a rule added to `CLAUDE.md`, a check wired up, an
-attempt thrown away. Retrying until it passes is the routine case, and changing
-what the work runs against is the skilled one.
+### Making the first prototype playable, then less predictable
 
-Cite each moment as a link whose text is the commit hash or range and whose
-target is this repo's commit or compare URL, so a reader clicks straight to the
-evidence:
+The first working version established the game loop: movement, jumping,
+collisions, level transitions, death, and a finish condition. Once that existed,
+I shifted the design away from a normal platformer and toward a game where the
+player learns by being tricked once, then adapting. I added traps that are
+legible only after the player tests them, and paired them with regression tests
+for timing, reset behaviour, and whether the level can still be completed.
+Evidence:
+[`53eb76f`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-lyclccylcq/commit/53eb76f).
 
-- one commit: [`a1b2c3d`](https://github.com/YOUR-ORG/YOUR-REPO/commit/a1b2c3d)
-- a range:
-  [`a1b2c3d...e4f5a6b`](https://github.com/YOUR-ORG/YOUR-REPO/compare/a1b2c3d...e4f5a6b)
+### Correcting traps from play feedback
 
-To pair a prompt with the commit it produced, quote the prompt (curated, not a
-full transcript) next to the citation:
+Several Level 2 traps only became clear after playing the finished screen, not
+just reading the code. The moving platform could trigger from the wrong place,
+the pit/cloud trap was either too forgiving or too punishing, hidden platforms
+left confusing visual leftovers, and the fake door needed to look exactly like
+a real door until the bait worked. I treated those as design bugs rather than
+small tuning preferences. The fixes tightened trigger zones, removed leftover
+hidden platforms, made the falling cloud escapable by baiting, kept the real
+door hidden until the fake door reveals itself, and expanded the viewport
+without stretching the ground art. Evidence:
+[`a04b765`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-lyclccylcq/commit/a04b765).
 
-> the prompt, verbatim
+### Avoiding a fake Level 3
 
-Screenshots are welcome where one carries the verification better than a
-sentence does. Commit the file to this repo and link it with a **relative**
-path, which is what makes it render on GitHub: `![alt text](docs/before.png)`.
-Images don't count towards the word count and don't replace the citation.
+Once Level 2 could be cleared, the game briefly behaved as if another level
+should load. That made the ending feel broken instead of intentional. I changed
+the state machine so clearing Level 2 produces a stable complete state, and I
+added tests around level selection, completion, and rendering so the game cannot
+quietly drift back into trying to advance beyond the levels I actually built.
+Evidence:
+[`db4cc6d`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-lyclccylcq/commit/db4cc6d).
 
-## Before you ship
+### Turning polish into game rules
 
-`pnpm check:evidence` verifies your citations resolve to real commits, that a
-reflection entry the marker reads is in `reflections/`, and that your
-`CLAUDE.md` is there --- before a marker ever opens the file. It checks that
-your map is traceable, not that it is good: the marker judges whether your
-small, deliberately chosen set of moments shows real judgement and reflection. A
-green check is not a substitute for that curation.
+The final visible changes were not just decoration. Moving the name into a
+compact logo made the game screen feel less like a labelled prototype. Replacing
+the left staircase with a fence trap also gave Level 1 the same comic cruelty as
+Level 2: the object sits harmlessly until the player has jumped past it, then
+chases toward the cliff fast enough to matter. I kept that rule in tests too,
+including the start position, chase trigger, speed, cliff fall, and reset after
+death. Evidence:
+[`5e13c84`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-lyclccylcq/commit/5e13c84).
 
-Images aren't checked: unlike a citation whose SHA doesn't resolve, a broken
-image is visible the moment this file is rendered on GitHub.
+## Current checks
+
+Before this process write-up, the implementation passed `pnpm check`: typecheck,
+production build, and the Vitest suite all completed successfully. The evidence
+check was the remaining red gate because this file was still the template and
+`reflections/crit-5.md` was missing; this pass replaces those placeholders with
+traceable process evidence.

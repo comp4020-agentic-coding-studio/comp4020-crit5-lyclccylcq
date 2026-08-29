@@ -51,8 +51,9 @@ const FENCE_RAIL = "#a9743f";
 // Visual-only rise height — taller than the trap's actual (much shorter)
 // collision zone, same as every ground slab already being drawn taller than
 // its own thin hitbox. Purely cosmetic: the trap's lethal footprint in
-// engine.ts never changes.
-const STONE_WALL_HEIGHT = 90;
+// engine.ts never changes. Slightly reduced from its original 90 so the wall
+// no longer towers over the player sprite (PLAYER_H = 32) quite so much.
+const STONE_WALL_HEIGHT = 70;
 
 // Ground/step rects are collision columns, not visual ones — they're this
 // tall so nothing can ever tunnel through the bottom of the viewport, no
@@ -105,7 +106,6 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState, camera: 
 
   drawPhaseOverlay(ctx, state.phase);
   drawBanner(ctx, state);
-  drawCompleteScreen(ctx, state);
 }
 
 function drawClouds(ctx: CanvasRenderingContext2D, camera: number): void {
@@ -432,27 +432,6 @@ function drawBanner(ctx: CanvasRenderingContext2D, state: GameState): void {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(`Level ${state.level}`, VIEWPORT_WIDTH / 2, 40);
-  ctx.restore();
-}
-
-// The final "you're done" screen: there is no Level 3, so this is where the
-// game actually ends, once the Level 2 door-entry animation finishes. Text
-// only, no gameplay hints — the player's own restart (any key) or the
-// level-select control (still usable from here) are what bring the game back.
-function drawCompleteScreen(ctx: CanvasRenderingContext2D, state: GameState): void {
-  if (state.phase !== "complete") return;
-  ctx.save();
-  ctx.fillStyle = "rgba(20,30,40,0.85)";
-  ctx.font = "bold 34px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("You cleared Pip's Detour", VIEWPORT_WIDTH / 2, VIEWPORT_HEIGHT / 2 - 18);
-  ctx.font = "16px sans-serif";
-  ctx.fillText(
-    "Press any key, or pick a level above, to play again",
-    VIEWPORT_WIDTH / 2,
-    VIEWPORT_HEIGHT / 2 + 20,
-  );
   ctx.restore();
 }
 

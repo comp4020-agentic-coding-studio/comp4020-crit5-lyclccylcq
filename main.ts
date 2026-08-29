@@ -9,6 +9,9 @@ import {
 import type { GameState, Input, Level } from "./game/engine.ts";
 import { render } from "./game/render.ts";
 import { setActiveLevel, wireLevelSelect } from "./game/levelSelect.ts";
+import { createMusicController, startAutoplayWithFallback } from "./game/audio.ts";
+import { wireMusicControls } from "./game/musicControls.ts";
+import { updateCompletionCard, wireCompletionCard } from "./game/completionCard.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game");
 if (!canvas) throw new Error("missing #game canvas");
@@ -26,6 +29,9 @@ function updateDeathCount(): void {
 }
 updateDeathCount();
 
+const completionCard = document.querySelector<HTMLElement>("#completion-card");
+if (completionCard) updateCompletionCard(completionCard, state);
+
 const held = { left: false, right: false };
 let jumpQueued = false;
 
@@ -41,9 +47,6 @@ window.addEventListener("keydown", (event) => {
     if (state.phase === "playing") jumpQueued = true;
     event.preventDefault(); // stop the page from scrolling on spacebar
   }
-  if (state.phase === "complete" && (held.left || held.right || JUMP_KEYS.has(key))) {
-    restartTo(1); // clearing the game replays it from Level 1
-  }
 });
 
 window.addEventListener("keyup", (event) => {
@@ -56,6 +59,7 @@ function restartTo(level: Level): void {
   state = createInitialState(level);
   document.body.dataset.gameState = state.phase;
   updateDeathCount();
+  if (completionCard) updateCompletionCard(completionCard, state);
 }
 
 document.body.dataset.gameState = state.phase;
@@ -69,6 +73,25 @@ if (levelSelect) {
   });
 }
 
+if (completionCard) {
+  wireCompletionCard(completionCard, () => {
+    restartTo(1); // clearing the game replays it from Level 1
+    if (levelSelect) setActiveLevel(levelSelect, 1);
+  });
+}
+
+// Created once, independent of `state`: level switches, deaths, respawns,
+// and restartTo() below must never touch this — see game/audio.ts.
+const bgMusic = document.querySelector<HTMLAudioElement>("#bg-music");
+const musicControls = document.querySelector<HTMLElement>("#music-controls");
+if (bgMusic) {
+  const musicController = createMusicController(bgMusic);
+  if (musicControls) wireMusicControls(musicControls, musicController);
+  // Try to start playing immediately; if the browser withholds autoplay,
+  // this falls back to the first click/keydown/touch anywhere on the page.
+  startAutoplayWithFallback(musicController, window);
+}
+
 let last = performance.now();
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 1 / 30);
@@ -80,7 +103,10 @@ function frame(now: number): void {
     const previousPhase = state.phase;
     const previousDeaths = state.deaths;
     state = step(state, input, dt);
-    if (previousPhase !== state.phase) document.body.dataset.gameState = state.phase;
+    if (previousPhase !== state.phase) {
+      document.body.dataset.gameState = state.phase;
+      if (completionCard) updateCompletionCard(completionCard, state);
+    }
     if (previousDeaths !== state.deaths) updateDeathCount();
   } else {
     jumpQueued = false;

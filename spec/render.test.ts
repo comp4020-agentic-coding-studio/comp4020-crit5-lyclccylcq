@@ -300,6 +300,21 @@ describe("requirement 2: the red spike hazard is now a fast-rising stone wall", 
     expect(mid).toBeGreaterThan(early);
     expect(full).toBeGreaterThan(mid);
   });
+
+  it("has a reduced visual height compared to its original, oversized rise", () => {
+    const state: GameState = {
+      ...createInitialState(2),
+      traps: { ...createInitialState(2).traps, spikes: { triggered: true, timer: SPIKE_DELAY } },
+    };
+    const draws = renderTo(state).fillRectCalls.filter(
+      (c) => c.x === LEVEL2_SPIKE_ZONE.x && c.w === LEVEL2_SPIKE_ZONE.w,
+    );
+    const fullHeight = Math.max(...draws.map((c) => c.h));
+
+    // Was originally 90px tall — slightly reduced so it no longer towers over
+    // the player sprite quite so much.
+    expect(fullHeight).toBeLessThan(90);
+  });
 });
 
 describe("requirement 3: the fake door stays visually identical to the real door until contact", () => {
@@ -462,13 +477,14 @@ describe("requirements 3 & 4: death and door-entry replace the normal player dra
 });
 
 describe("final completion screen", () => {
-  it("renders the completion text once the game reaches the complete phase", () => {
-    const state: GameState = { ...createInitialState(2), phase: "complete", phaseTime: 0 };
-    const texts = renderTo(state).fillTextCalls.map((c) => c.text);
-    expect(texts).toContain("You cleared Pip's Detour");
-  });
+  // The completion message now lives in a separate DOM card (index.html's
+  // #completion-card, wired in main.ts) rather than being drawn onto the
+  // canvas — this locks that in as a permanent regression guard, across
+  // every phase the canvas can be in.
+  it("never draws the completion message onto the canvas, in any phase", () => {
+    const complete: GameState = { ...createInitialState(2), phase: "complete", phaseTime: 0 };
+    expect(renderTo(complete).fillTextCalls.map((c) => c.text)).not.toContain("You cleared Pip's Detour");
 
-  it("shows no completion text while still playing, dead, or mid door-entry", () => {
     const playing = renderTo(createInitialState(2)).fillTextCalls.map((c) => c.text);
     expect(playing).not.toContain("You cleared Pip's Detour");
 

@@ -26,8 +26,10 @@ import {
   LEVEL2_SPIKE_ZONE,
   LEVEL2_FENCE,
   LEVEL2_FENCE_TRIGGER,
+  LEVEL2_FENCE_CLIFF_X,
   FENCE_CHASE_SPEED,
   FENCE_CHASE_DISTANCE,
+  FENCE_FALL_DURATION,
   fenceRect,
   LEVEL2_CHASM_1,
   LEVEL2_CHASM_2,
@@ -140,13 +142,46 @@ describe("game logo in the header", () => {
       (el) => el.textContent?.trim() === "Pip's Detour",
     );
     expect(headings.length).toBe(1);
-    expect(home?.doc.querySelector("main")?.textContent?.trim()).toBe("");
+
+    // main holds the canvas and the (normally hidden) completion card — the
+    // card has its own "You cleared Pip's Detour" heading, which is fine;
+    // what must never happen is main repeating the game's own title.
+    const mainHeadings = Array.from(home?.doc.querySelector("main")?.querySelectorAll("h1, h2") ?? []);
+    expect(mainHeadings.some((el) => el.textContent?.trim() === "Pip's Detour")).toBe(false);
   });
 
   it("still keeps the Home link, level selector, and death counter alongside the logo", () => {
     expect(home?.doc.querySelector('nav a[href="./"]')?.textContent?.trim()).toBe("Home");
     expect(home?.doc.querySelector("#level-select")).toBeTruthy();
     expect(home?.doc.querySelector("#death-count")).toBeTruthy();
+  });
+});
+
+describe("completion card (separate end-screen UI, not canvas text)", () => {
+  const home = pages.find(({ path }) => path.endsWith("index.html"));
+
+  it("ships a completion card element, hidden by default, as a sibling of the canvas", () => {
+    const card = home?.doc.querySelector("#completion-card");
+    expect(card).toBeTruthy();
+    expect(card?.hasAttribute("hidden")).toBe(true);
+    expect(card?.parentElement?.tagName.toLowerCase()).toBe("main");
+    expect(home?.doc.querySelector("main #game")).toBeTruthy();
+  });
+
+  it("offers a Home button using the same destination as the existing nav Home link", () => {
+    const card = home?.doc.querySelector("#completion-card");
+    const homeLink = card?.querySelector("[data-completion-home]");
+    expect(homeLink?.getAttribute("href")).toBe("./");
+    expect(homeLink?.getAttribute("href")).toBe(
+      home?.doc.querySelector('nav a[href="./"]')?.getAttribute("href"),
+    );
+  });
+
+  it("offers a Play Again button", () => {
+    const card = home?.doc.querySelector("#completion-card");
+    expect(card?.querySelector("[data-completion-play-again]")?.textContent?.trim()).toBe(
+      "Play Again",
+    );
   });
 });
 
@@ -338,6 +373,13 @@ describe("play can be lost", () => {
 
     const gapToFence = LEVEL2_FENCE.x - (LEVEL2_SPIKE_ZONE.x + LEVEL2_SPIKE_ZONE.w);
     expect(gapToFence).toBeGreaterThanOrEqual(100); // enough room to land and line up the jump
+  });
+
+  it("keeps the fence's starting position well clear of the rising stone wall behind it", () => {
+    // The fence used to sit only 160px past the wall's own footprint, close
+    // enough to read as stacked against it rather than its own obstacle.
+    const gapToWall = LEVEL2_FENCE.x - (LEVEL2_SPIKE_ZONE.x + LEVEL2_SPIKE_ZONE.w);
+    expect(gapToWall).toBeGreaterThanOrEqual(200);
   });
 
   it("keeps the spike trigger tight against the zone, not far back down the approach", () => {
@@ -1105,7 +1147,7 @@ describe("death count tracking", () => {
     expect(state.deaths).toBe(1);
   });
 
-  it("resets the death count to zero once the game is fully cleared", () => {
+  it("preserves the run's final death count once the game is fully cleared, for the completion UI to show", () => {
     let state = createInitialState(2);
     state.deaths = 3;
     state.player = {
@@ -1127,7 +1169,9 @@ describe("death count tracking", () => {
     }
 
     expect(state.phase).toBe("complete");
-    expect(state.deaths).toBe(0);
+    // Not reset here — the completion card (main.ts) reads this before the
+    // next createInitialState() call is what actually zeroes it.
+    expect(state.deaths).toBe(3);
   });
 
   it("resets to zero on a fresh createInitialState call, covering restart and level-select", () => {
@@ -1254,14 +1298,71 @@ describe("play can be lost", () => {
     expect(solidRects(state.traps)).not.toContainEqual(LEVEL2_FENCE);
   });
 
-  it("moves the triggered fence to the right faster than the player's own move speed, capped at a chase distance", () => {
+  it("moves the triggered fence to the right faster than the player's own move speed", () => {
     expect(FENCE_CHASE_SPEED).toBeGreaterThan(MOVE_SPEED);
 
     const midChase = fenceRect({ triggered: true, timer: 0.2 });
     expect(midChase.x).toBe(LEVEL2_FENCE.x + FENCE_CHASE_SPEED * 0.2);
+  });
 
+  it("increases the fence's chase speed above its previous, slower baseline", () => {
+    // Previously 360px/s — retuned faster so the chase reads as a genuine
+    // pursuit all the way to the cliff, not a brief nudge.
+    expect(FENCE_CHASE_SPEED).toBeGreaterThan(360);
+  });
+
+  it("starts the fence with real distance from the upcoming cliff edge, not hard against it", () => {
+    const gapToCliff = LEVEL2_FENCE_CLIFF_X - (LEVEL2_FENCE.x + LEVEL2_FENCE.w);
+    // Enough room to land past the fence, react, and get moving before the
+    // cliff is even a concern.
+    expect(gapToCliff).toBeGreaterThanOrEqual(250);
+  });
+
+  it("chases the fence all the way to the cliff edge, not stopping short of it", () => {
+    const chaseDuration = FENCE_CHASE_DISTANCE / FENCE_CHASE_SPEED;
+    const atCliffEdge = fenceRect({ triggered: true, timer: chaseDuration });
+    expect(atCliffEdge.x + atCliffEdge.w).toBeCloseTo(LEVEL2_FENCE_CLIFF_X, 5);
+    expect(atCliffEdge.y).toBe(LEVEL2_FENCE.y); // hasn't started falling yet, right at the edge
+
+    // Even long after, the horizontal position never overshoots the edge —
+    // all further travel from here on is the fall, not more sliding right.
     const longAfter = fenceRect({ triggered: true, timer: 999 });
-    expect(longAfter.x).toBe(LEVEL2_FENCE.x + FENCE_CHASE_DISTANCE);
+    expect(longAfter.x).toBe(atCliffEdge.x);
+  });
+
+  it("falls down into the chasm once it reaches the cliff edge, instead of stopping awkwardly", () => {
+    const chaseDuration = FENCE_CHASE_DISTANCE / FENCE_CHASE_SPEED;
+    const atEdge = fenceRect({ triggered: true, timer: chaseDuration });
+    const midFall = fenceRect({ triggered: true, timer: chaseDuration + FENCE_FALL_DURATION / 2 });
+    const fullyFallen = fenceRect({ triggered: true, timer: chaseDuration + FENCE_FALL_DURATION + 1 });
+
+    expect(midFall.y).toBeGreaterThan(atEdge.y);
+    expect(fullyFallen.y).toBeGreaterThan(midFall.y);
+    // Gone well below the visible viewport, the same "fallen for good" shape
+    // as the pit cloud's fall.
+    expect(fullyFallen.y).toBeGreaterThan(VIEWPORT_HEIGHT);
+  });
+
+  it("no longer blocks or threatens the player once it has fallen away", () => {
+    const chaseDuration = FENCE_CHASE_DISTANCE / FENCE_CHASE_SPEED;
+    const traps = { triggered: true, timer: chaseDuration + FENCE_FALL_DURATION + 1 };
+    const fallenRect = fenceRect(traps);
+
+    // Fallen well past any position the player can actually occupy (the
+    // death boundary itself), so a collision check against it can never
+    // succeed again.
+    expect(fallenRect.y).toBeGreaterThan(DEATH_Y);
+
+    const state = createInitialState(2);
+    state.traps.platform = traps;
+    state.player = {
+      ...state.player,
+      x: fallenRect.x,
+      y: GROUND_Y - PLAYER_H,
+      onGround: true,
+    };
+    const next = step(state, noInput, 1 / 60);
+    expect(next.phase).toBe("playing");
   });
 
   it("does not hurt the player while untriggered, even standing right beside it", () => {
@@ -1309,6 +1410,20 @@ describe("play can be lost", () => {
     expect(state.phase).toBe("playing");
     expect(state.traps.platform).toEqual({ triggered: false, timer: 0 });
     expect(fenceRect(state.traps.platform)).toEqual(LEVEL2_FENCE);
+  });
+
+  it("resets the fence to its original position and inactive state when selecting Level 2 directly, not only on death/respawn", () => {
+    // Simulate an in-progress chase (mid-chase or already fallen), then a
+    // fresh Level 2 selection — createInitialState(2) is exactly what the
+    // level-select control calls (see main.ts) as well as what a full
+    // restart to Level 2 uses.
+    const midChase = createInitialState(2);
+    midChase.traps.platform = { triggered: true, timer: FENCE_CHASE_DISTANCE / FENCE_CHASE_SPEED + 1 };
+
+    const fresh = createInitialState(2);
+
+    expect(fresh.traps.platform).toEqual({ triggered: false, timer: 0 });
+    expect(fenceRect(fresh.traps.platform)).toEqual(LEVEL2_FENCE);
   });
 
   it("does not arm the chasm platform merely from resting at CHASM_1's far edge", () => {
@@ -1570,15 +1685,15 @@ describe("play can be lost", () => {
 
     const crossFenceAndChasm1 = () => {
       run(right, 6);
-      hop("right", 18); // over the fence, landing clear on the far side — short of the trigger zone, so the chase isn't armed yet
+      hop("right", 28); // over the (now farther-out) fence, landing clear on the far side — short of the trigger zone, so the chase isn't armed yet
       expect(state.phase).toBe("playing");
       expect(state.traps.platform.triggered).toBe(false);
 
-      run(right, 75); // into the trigger zone and on toward the chasm edge — arms the chase partway through, but the head start plus the chase's own distance cap keep it from ever closing the gap
+      run(right, 55); // into the trigger zone and on toward the chasm edge — arms the chase partway through, but the head start plus the chase's own distance cap keep it from ever closing the gap
       expect(state.phase).toBe("playing");
       expect(state.traps.platform.triggered).toBe(true);
 
-      hop("right", 20); // onto CHASM_1 — permanently safe
+      hop("right", 22); // onto CHASM_1 — permanently safe
       expect(state.phase).toBe("playing");
     };
 
@@ -1660,11 +1775,14 @@ describe("play can be lost", () => {
 
     // Walk toward the fake door but stop short of actually touching it: close
     // range bait-reveals it (and the real door behind it) safely, well before
-    // contact would actually be lethal.
+    // contact would actually be lethal. The margin needs to clear a full
+    // frame's worth of horizontal travel (MOVE_SPEED / 60 ≈ 5.3px), or the
+    // last step of this loop can overshoot straight into the (now lethal)
+    // fake door instead of stopping short of it.
     let approachFrames = 0;
     while (
       state.phase === "playing" &&
-      state.player.x + PLAYER_W < LEVEL2_FAKE_DOOR.x - 4 &&
+      state.player.x + PLAYER_W < LEVEL2_FAKE_DOOR.x - 12 &&
       approachFrames < 300
     ) {
       state = step(state, right, 1 / 60);

@@ -8,6 +8,7 @@ body {
 }
 
 main {
+  position: relative;
   max-width: 82rem;
   margin: 0 auto;
   display: flex;
@@ -86,6 +87,39 @@ header nav {
   font-weight: 600;
 }
 
+.music-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.music-controls button {
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid #45505a;
+  background: transparent;
+  color: #cfe9ff;
+  cursor: pointer;
+}
+
+.music-controls button:hover {
+  border-color: #8fd3ff;
+}
+
+.music-controls button[aria-pressed="true"] {
+  background: #8fd3ff;
+  border-color: #8fd3ff;
+  color: #14202a;
+}
+
+.music-controls input[type="range"] {
+  width: 4.5rem;
+  accent-color: #8fd3ff;
+}
+
 .death-count {
   font-size: 0.85rem;
   color: #cfe9ff;
@@ -102,4 +136,73 @@ header nav {
   border-radius: 12px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
   outline: none;
+}
+
+/* The end-of-game card: a real DOM overlay above the canvas, not text drawn
+   onto it — see drawCompleteScreen's removal in game/render.ts. Positioned to
+   cover the same box the canvas occupies within `main`. */
+.completion-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.completion-card[hidden] {
+  display: none;
+}
+
+.completion-card-inner {
+  background: rgba(20, 30, 40, 0.92);
+  border: 1px solid #45505a;
+  border-radius: 16px;
+  padding: 2rem 2.5rem;
+  max-width: 26rem;
+  text-align: center;
+  color: #f4f4f4;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+}
+
+.completion-card-inner h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+}
+
+.completion-card-inner p {
+  margin: 0 0 1.25rem;
+  color: #cfe9ff;
+}
+
+.completion-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.completion-actions a,
+.completion-actions button {
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 999px;
+  border: 1px solid #45505a;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.completion-actions a {
+  background: transparent;
+  color: #cfe9ff;
+}
+
+.completion-actions a:hover {
+  border-color: #8fd3ff;
+}
+
+.completion-actions button {
+  background: #8fd3ff;
+  color: #14202a;
+  font-weight: 600;
 }
